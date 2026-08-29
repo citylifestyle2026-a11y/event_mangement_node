@@ -9,6 +9,7 @@ const generateQrCode = require("../utils/generateQrCode");
 const uploadToCloudinary = require("../utils/cloudinary.util");
 const AppError = require("../utils/AppError");
 const eventService = require("./event.service");
+const whatsappService = require("./whatsapp.service");
 const mongoose = require("mongoose");
 
 // ================= EVENT-WISE BOOKING NUMBER =================
@@ -35,6 +36,47 @@ const generateBookingNumber = async (eventId, eventCode, session) => {
   );
 
   return `${eventCode}-BK${String(counter.sequence).padStart(3, "0")}`;
+};
+
+// ================= SEND BOOKING QR VIA WHATSAPP (BEST-EFFORT) =================
+// Runs only after the booking + ticket transaction has already committed
+// successfully, and is intentionally never allowed to fail the booking:
+// Chatbox is an optional notification channel here, not part of the core
+// booking transaction. Any failure (missing Chatbox env config, Chatbox
+// API error, network error) is caught per-ticket and only logged —
+// never rethrown, and never surfaced in the API response — so a
+// WhatsApp outage can never turn a successful booking into a failed
+// request. The caught error's message is logged for diagnostics but the
+// CHATBOX_API_KEY itself is never part of that message (see
+// whatsapp.service.js), so nothing sensitive reaches the logs.
+const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tickets) => {
+  for (const ticket of tickets) {
+    try {
+      const passDateLine = ticket.passDate
+        ? `Pass Date: ${new Date(ticket.passDate).toLocaleDateString("en-GB")}\n`
+        : "";
+
+      const caption =
+        `*${event.title}*\n` +
+        `Booking No: ${booking.bookingNumber}\n` +
+        `Ticket No: ${ticket.ticketNumber}\n` +
+        `Ticket Type: ${ticketType.ticketName}\n` +
+        passDateLine +
+        `Name: ${booking.name}\n\n` +
+        `Please show this QR code at the entry gate.`;
+
+      await whatsappService.sendImageMessage({
+        phone: booking.mobileNumber,
+        imageUrl: ticket.qrImage,
+        caption,
+      });
+    } catch (error) {
+      console.error(
+        `WhatsApp QR notification failed for ticket ${ticket.ticketNumber}:`,
+        error.message
+      );
+    }
+  }
 };
 
 // post api
@@ -205,6 +247,18 @@ const createBooking = async (data, createdBy) => {
     );
 
     await session.commitTransaction();
+
+    // ================= WHATSAPP QR NOTIFICATION (NON-BLOCKING) =================
+    // Sent only after the transaction has committed, so a WhatsApp failure
+    // can never roll back or fail an already-successful booking (see
+    // sendBookingWhatsAppNotifications above for the error-handling
+    // rationale). The response shape below is unchanged either way.
+    await sendBookingWhatsAppNotifications(
+      booking[0],
+      event,
+      ticketType,
+      insertedTickets
+    );
 
     return {
       booking: booking[0],
