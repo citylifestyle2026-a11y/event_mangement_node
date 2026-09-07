@@ -50,6 +50,11 @@ const generateBookingNumber = async (eventId, eventCode, session) => {
 // CHATBOX_API_KEY itself is never part of that message (see
 // whatsapp.service.js), so nothing sensitive reaches the logs.
 const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tickets) => {
+  console.log(
+    `[Booking->WhatsApp] Starting WhatsApp send for booking ${booking.bookingNumber} ` +
+      `(${tickets.length} ticket(s), mobileNumber on file: "${booking.mobileNumber}")`
+  );
+
   for (const ticket of tickets) {
     try {
       const passDateLine = ticket.passDate
@@ -65,15 +70,32 @@ const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tick
         `Name: ${booking.name}\n\n` +
         `Please show this QR code at the entry gate.`;
 
+      console.log(
+        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: calling sendImageMessage ` +
+          `(qrImage: ${ticket.qrImage})`
+      );
+
+      // Awaited on purpose: this loop is itself awaited by createBooking
+      // right after the transaction commits (see below), so every
+      // ticket's WhatsApp call runs to completion — success or failure —
+      // before createBooking returns its response.
       await whatsappService.sendImageMessage({
         phone: booking.mobileNumber,
         imageUrl: ticket.qrImage,
         caption,
       });
+
+      console.log(
+        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: Chatbox accepted the message.`
+      );
     } catch (error) {
+      // sendImageMessage/sendChatboxRequest now throws on BOTH HTTP-level
+      // failures and body-level failures (HTTP 200 with e.g.
+      // {status:"failed", message:"Insufficient Balance"}) — so this
+      // catch block is reached for either case, and error.message is
+      // always the real reason Chatbox gave, never a generic string.
       console.error(
-        `WhatsApp QR notification failed for ticket ${ticket.ticketNumber}:`,
-        error.message
+        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: Chatbox rejected the message: ${error.message}`
       );
     }
   }

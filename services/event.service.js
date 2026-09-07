@@ -5,6 +5,7 @@ const Booking = require("../models/booking.model");
 const BookingTicket = require("../models/bookingTicket.model");
 const uploadToCloudinary = require("../utils/cloudinary.util");
 const generateEventCode = require("../utils/generateEventCode");
+const sanitizeText = require("../utils/sanitizeText");
 
 // ================= EVENT EXPIRY STATUS SYNC (NO CRON) =================
 // Persists the derived expiry status onto the Event document itself,
@@ -60,14 +61,16 @@ exports.createEvent = async (data, file, adminId) => {
 
   const event = await Event.create({
     title: data.title,
-    description: data.description,
+    // Sanitized server-side (previous audit finding) — stripped of any
+    // HTML markup before being persisted. See utils/sanitizeText.js.
+    description: sanitizeText(data.description),
     startDateTime: data.startDateTime,
     endDateTime: data.endDateTime,
     venueName: data.venueName,
     latitude: data.latitude,
     longitude: data.longitude,
     address: data.address,
-    termsConditions: data.termsConditions,
+    termsConditions: sanitizeText(data.termsConditions),
     videoLinks: data.videoLinks ? JSON.parse(data.videoLinks) : [],
     image: imageUrl,
     imagePublicId: imagePublicId,
@@ -222,14 +225,26 @@ exports.updateEvent = async (id, data, file) => {
     id,
     {
       title: data.title,
-      description: data.description,
+      // Sanitized server-side (previous audit finding) — see
+      // utils/sanitizeText.js. Falls back to the field's own default
+      // handling below only when the field isn't part of this update at
+      // all (data.description / data.termsConditions is undefined),
+      // preserving updateEventValidation's "optional per-field" update
+      // semantics instead of forcing every update to resend both.
+      description:
+        data.description !== undefined
+          ? sanitizeText(data.description)
+          : event.description,
       startDateTime: data.startDateTime,
       endDateTime: data.endDateTime,
       venueName: data.venueName,
       latitude: data.latitude,
       longitude: data.longitude,
       address: data.address,
-      termsConditions: data.termsConditions,
+      termsConditions:
+        data.termsConditions !== undefined
+          ? sanitizeText(data.termsConditions)
+          : event.termsConditions,
       videoLinks: data.videoLinks
         ? JSON.parse(data.videoLinks)
         : event.videoLinks,
@@ -299,6 +314,77 @@ exports.deleteEvent = async (id, adminId) => {
   return {
     success: true,
     message: "Event deleted successfully.",
+  };
+};
+
+// ================= DELETE EXPIRED EVENTS (SCHEDULER) =================
+// Called on a fixed cadence by schedulers/eventExpiry.scheduler.js. Mirrors
+// the exact same hard-delete cascade as the manual deleteEvent() above
+// (BookingTickets -> Bookings -> Event, all inside one transaction per
+// event) since that is the project's one existing "delete an event"
+// pattern — this just triggers it automatically once endDateTime has
+// passed instead of waiting for an Admin to click Delete.
+//
+// Only ever targets events that are not already soft/hard deleted
+// (isDeleted: { $ne: true }) and whose endDateTime is in the past,
+// regardless of the persisted `status` field (which is only kept in
+// sync lazily by syncEventExpiryStatus on read/update paths and may be
+// stale for an event nobody has viewed since it expired).
+//
+// Each event is deleted in its own transaction so one failure can never
+// abort cleanup for the rest of the batch — failures are collected and
+// returned instead of thrown, matching the isolation the scheduler's
+// runCleanup() already assumes (see its comment on the catch block).
+exports.deleteExpiredEvents = async () => {
+  const now = new Date();
+
+  const expiredEvents = await Event.find(
+    {
+      isDeleted: { $ne: true },
+      endDateTime: { $lt: now },
+    },
+    { _id: 1 }
+  );
+
+  const details = [];
+  let processed = 0;
+  let failed = 0;
+
+  for (const { _id } of expiredEvents) {
+    const session = await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+      await BookingTicket.deleteMany({ eventId: _id }, { session });
+      await Booking.deleteMany({ eventId: _id }, { session });
+      await Event.deleteOne({ _id }, { session });
+
+      await session.commitTransaction();
+
+      processed += 1;
+      details.push({ eventId: _id.toString(), status: "deleted" });
+    } catch (error) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+
+      failed += 1;
+      details.push({
+        eventId: _id.toString(),
+        status: "failed",
+        error: error.message,
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  return {
+    success: true,
+    processed,
+    failed,
+    details,
   };
 };
 

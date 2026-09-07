@@ -54,18 +54,9 @@ const createUser = async (admin, data, file) => {
       "event-management/users"
     );
 
-    // TEMP DEBUG — remove after confirming upload works
-    console.log("[DEBUG] createUser Cloudinary result:", uploadedImage);
-
     profileImage = uploadedImage.url;
     profileImagePublicId = uploadedImage.public_id;
   }
-
-  // TEMP DEBUG — remove after confirming upload works
-  console.log("[DEBUG] createUser before User.create ->", {
-    profileImage,
-    profileImagePublicId,
-  });
 
   const user = await User.create({
     name,
@@ -174,18 +165,9 @@ const updateUser = async (id, data, file) => {
       "event-management/users"
     );
 
-    // TEMP DEBUG — remove after confirming upload works
-    console.log("[DEBUG] updateUser Cloudinary result:", uploadedImage);
-
     profileImage = uploadedImage.url;
     profileImagePublicId = uploadedImage.public_id;
   }
-
-  // TEMP DEBUG — remove after confirming upload works
-  console.log("[DEBUG] updateUser before findByIdAndUpdate ->", {
-    profileImage,
-    profileImagePublicId,
-  });
 
   const updatedUser = await User.findByIdAndUpdate(
     id,
