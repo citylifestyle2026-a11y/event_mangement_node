@@ -8,7 +8,6 @@ const {
     validate,
 } = require("../validators/ticketType.validator");
 const { protect } = require("../middlewares/auth.middleware");
-const authorize = require("../middlewares/authorize.middleware");
 
 // `protect` now runs first, matching the pattern used in event.routes.js —
 // previously validation ran before auth, which meant an unauthenticated
@@ -16,7 +15,6 @@ const authorize = require("../middlewares/authorize.middleware");
 router.post(
     "/create",
     protect,
-    authorize("admin"),
     createTicketTypeValidation,
     validate,
     ticketTypeController.createTicketType
@@ -28,7 +26,6 @@ router.get("/get-all-ticket-types/:eventId", protect, ticketTypeController.getAl
 router.put(
     "/update/:id",
     protect,
-    authorize("admin"),
     updateTicketTypeValidation,
     validate,
     ticketTypeController.updateTicketType
@@ -37,7 +34,6 @@ router.put(
 router.delete(
     "/delete/:id",
     protect,
-    authorize("admin"),
     ticketTypeController.deleteTicketType
 );
 module.exports = router;

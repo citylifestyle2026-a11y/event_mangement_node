@@ -10,6 +10,7 @@ const uploadToCloudinary = require("../utils/cloudinary.util");
 const AppError = require("../utils/AppError");
 const eventService = require("./event.service");
 const whatsappService = require("./whatsapp.service");
+const buildQrNotificationBodyParams = require("../utils/buildQrNotificationBodyParams");
 const mongoose = require("mongoose");
 
 // ================= EVENT-WISE BOOKING NUMBER =================
@@ -49,53 +50,34 @@ const generateBookingNumber = async (eventId, eventCode, session) => {
 // request. The caught error's message is logged for diagnostics but the
 // CHATBOX_API_KEY itself is never part of that message (see
 // whatsapp.service.js), so nothing sensitive reaches the logs.
+//
+// Uses sendMediaTemplateMessage (an approved WhatsApp template), NOT
+// sendImageMessage. A freshly-booked customer has virtually never
+// messaged the business's WhatsApp number first, so the 24-hour
+// customer-service session window is closed — WhatsApp rejects a
+// free-form sendImageMessage in that case with error 131047
+// ("Re-engagement message"), even though the Chatbox API itself still
+// returns HTTP 200. Templates are the only supported way to deliver a
+// message outside that window. See utils/buildQrNotificationBodyParams.js
+// for the exact {{1}}-{{5}} mapping used by the approved
+// "event_booking_qr_pass" template.
 const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tickets) => {
-  console.log(
-    `[Booking->WhatsApp] Starting WhatsApp send for booking ${booking.bookingNumber} ` +
-      `(${tickets.length} ticket(s), mobileNumber on file: "${booking.mobileNumber}")`
-  );
+  const templateName = process.env.CHATBOX_QR_TEMPLATE_NAME;
+  const templateLanguage = process.env.CHATBOX_QR_TEMPLATE_LANGUAGE || "en";
 
   for (const ticket of tickets) {
     try {
-      const passDateLine = ticket.passDate
-        ? `Pass Date: ${new Date(ticket.passDate).toLocaleDateString("en-GB")}\n`
-        : "";
-
-      const caption =
-        `*${event.title}*\n` +
-        `Booking No: ${booking.bookingNumber}\n` +
-        `Ticket No: ${ticket.ticketNumber}\n` +
-        `Ticket Type: ${ticketType.ticketName}\n` +
-        passDateLine +
-        `Name: ${booking.name}\n\n` +
-        `Please show this QR code at the entry gate.`;
-
-      console.log(
-        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: calling sendImageMessage ` +
-          `(qrImage: ${ticket.qrImage})`
-      );
-
-      // Awaited on purpose: this loop is itself awaited by createBooking
-      // right after the transaction commits (see below), so every
-      // ticket's WhatsApp call runs to completion — success or failure —
-      // before createBooking returns its response.
-      await whatsappService.sendImageMessage({
+      await whatsappService.sendMediaTemplateMessage({
         phone: booking.mobileNumber,
+        templateName,
+        languageCode: templateLanguage,
         imageUrl: ticket.qrImage,
-        caption,
+        bodyParams: buildQrNotificationBodyParams({ booking, event, ticketType, ticket }),
       });
-
-      console.log(
-        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: Chatbox accepted the message.`
-      );
     } catch (error) {
-      // sendImageMessage/sendChatboxRequest now throws on BOTH HTTP-level
-      // failures and body-level failures (HTTP 200 with e.g.
-      // {status:"failed", message:"Insufficient Balance"}) — so this
-      // catch block is reached for either case, and error.message is
-      // always the real reason Chatbox gave, never a generic string.
       console.error(
-        `[Booking->WhatsApp] Ticket ${ticket.ticketNumber}: Chatbox rejected the message: ${error.message}`
+        `WhatsApp QR notification failed for ticket ${ticket.ticketNumber}:`,
+        error.message
       );
     }
   }

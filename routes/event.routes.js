@@ -3,7 +3,6 @@ const router = express.Router();
 
 const upload = require("../middlewares/upload.middleware");
 const { protect } = require("../middlewares/auth.middleware");
-const authorize = require("../middlewares/authorize.middleware");
 
 const eventController = require("../controllers/event.controller");
 
@@ -17,7 +16,6 @@ const {
 router.post(
   "/create",
   protect,
-  authorize("admin"),
   upload.single("image"),
   createEventValidation,
   validate,
@@ -42,7 +40,6 @@ router.get(
 router.put(
   "/:id/update",
   protect,
-  authorize("admin"),
   upload.single("image"),
   updateEventValidation,
   validate,
@@ -53,7 +50,6 @@ router.put(
 router.delete(
   "/:id/delete",
   protect,
-  authorize("admin"),
   eventController.deleteEvent
 );
 
@@ -61,7 +57,6 @@ router.delete(
 router.patch(
   "/:id/status",
   protect,
-  authorize("admin"),
   eventController.changeEventStatus
 );
 module.exports = router;

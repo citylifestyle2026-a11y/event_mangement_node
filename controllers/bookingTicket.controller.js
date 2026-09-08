@@ -22,6 +22,26 @@ const registerUser = async (req, res, next) => {
 };
 
 
+// ================= RESEND TICKET (WHATSAPP) =================
+
+const resendTicket = async (req, res, next) => {
+  try {
+    const ticket = await bookingTicketService.resendTicket(
+      req.params.ticketId
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Ticket resent successfully.",
+      data: ticket,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
 module.exports = {
   registerUser,
+  resendTicket,
 };

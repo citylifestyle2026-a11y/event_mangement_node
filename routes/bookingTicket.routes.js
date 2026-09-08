@@ -23,5 +23,13 @@ router.put(
   bookingTicketController.registerUser
 );
 
+// ================= RESEND TICKET (WHATSAPP) =================
+
+router.post(
+  "/resend/:ticketId",
+  protect,
+  bookingTicketController.resendTicket
+);
+
 
 module.exports = router;
