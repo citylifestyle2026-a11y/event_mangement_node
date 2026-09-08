@@ -11,6 +11,8 @@ const AppError = require("../utils/AppError");
 const eventService = require("./event.service");
 const whatsappService = require("./whatsapp.service");
 const buildQrNotificationBodyParams = require("../utils/buildQrNotificationBodyParams");
+const buildRegistrationBodyParams = require("../utils/buildRegistrationBodyParams");
+const generateRegistrationToken = require("../utils/generateRegistrationToken");
 const mongoose = require("mongoose");
 
 // ================= EVENT-WISE BOOKING NUMBER =================
@@ -78,6 +80,55 @@ const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tick
       console.error(
         `WhatsApp QR notification failed for ticket ${ticket.ticketNumber}:`,
         error.message
+      );
+    }
+  }
+};
+
+// ================= SEND REGISTRATION LINK VIA WHATSAPP (BEST-EFFORT) =================
+// Separate from sendBookingWhatsAppNotifications above (the existing QR
+// flow) on purpose: BODY-ONLY template (whatsappService.sendTemplateMessage)
+// -- never the media/header template used for the QR pass
+// (whatsappService.sendMediaTemplateMessage), which this function never
+// calls and does not touch.
+//
+// The approved "event_registration_link" template's BODY now carries
+// only booking.name / event.title / booking.bookingNumber (see
+// utils/buildRegistrationBodyParams.js); the registration link itself
+// is delivered via the template's Dynamic URL "Visit Website" button
+// instead. A single template message supports only one button
+// parameter, and each ticket has its own unique registrationToken, so
+// -- same per-ticket loop pattern as sendBookingWhatsAppNotifications
+// above -- one WhatsApp message is sent per ticket, each with the same
+// booking-level body text but that ticket's own token in the button.
+//
+// Runs only after the booking + ticket transaction has already
+// committed, and -- like the QR notification -- is never allowed to
+// fail the booking: any failure (missing Chatbox config, Chatbox API
+// error, network error) is caught per-ticket and only logged, never
+// rethrown, so a WhatsApp outage can never turn a successful booking
+// into a failed request.
+const sendRegistrationWhatsAppNotification = async (booking, event, tickets) => {
+  const templateName =
+    process.env.CHATBOX_REGISTRATION_TEMPLATE_NAME || "event_registration_link";
+  const templateLanguage =
+    process.env.CHATBOX_REGISTRATION_TEMPLATE_LANGUAGE || "en";
+
+  const bodyParams = buildRegistrationBodyParams({ booking, event });
+
+  for (const ticket of tickets) {
+    try {
+      await whatsappService.sendTemplateMessage({
+        phone: booking.mobileNumber,
+        templateName,
+        languageCode: templateLanguage,
+        bodyParams,
+        buttonParam: buildRegistrationBodyParams.buildRegistrationButtonParam(ticket),
+      });
+    } catch (error) {
+      console.error(
+        `WhatsApp registration notification failed for booking ${booking.bookingNumber}, ticket ${ticket.ticketNumber}:`,
+        error
       );
     }
   }
@@ -231,7 +282,18 @@ const createBooking = async (data, createdBy) => {
         "event-management/qr-codes"
       );
 
+      // ================= REGISTRATION TOKEN =================
+      // Generated with a pre-assigned _id so the token can identify this
+      // exact BookingTicket from the moment it's created -- one unique
+      // token per ticket, persisted on the ticket itself (registrationToken)
+      // so a later WhatsApp resend reuses this same token instead of
+      // minting a new one. Does not touch/replace qrToken, which remains
+      // exclusively for the existing QR/entry-scan flow.
+      const ticketId = new mongoose.Types.ObjectId();
+      const registrationToken = generateRegistrationToken(ticketId);
+
       bookingTickets.push({
+        _id: ticketId,
         bookingId: booking[0]._id,
         eventId,
         ticketTypeId,
@@ -242,6 +304,7 @@ const createBooking = async (data, createdBy) => {
         qrImagePublicId: qrUpload.public_id,
         status: "Active",
         passDate,
+        registrationToken,
       });
     }
 
@@ -261,6 +324,17 @@ const createBooking = async (data, createdBy) => {
       booking[0],
       event,
       ticketType,
+      insertedTickets
+    );
+
+    // ================= WHATSAPP REGISTRATION NOTIFICATION (NON-BLOCKING) =================
+    // One message per ticket, each carrying that ticket's own
+    // registration token in the button -- see
+    // sendRegistrationWhatsAppNotification above. Independent of, and
+    // never able to affect, the QR notification call directly above it.
+    await sendRegistrationWhatsAppNotification(
+      booking[0],
+      event,
       insertedTickets
     );
 
@@ -839,7 +913,7 @@ const getBookingById = async (bookingId) => {
   const tickets = await BookingTicket.find({
     bookingId: booking._id,
   })
-    .select("-qrToken -qrImagePublicId -__v")
+    .select("-qrToken -qrImagePublicId -registrationToken -__v")
     .sort({ createdAt: 1 });
 
   return {

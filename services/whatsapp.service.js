@@ -60,13 +60,42 @@ const sendChatboxRequest = async (payload) => {
     data = null;
   }
 
-  if (!response.ok) {
-    const errorMessage =
-      (data && (data.message || data.error)) ||
-      `Chatbox WhatsApp API request failed with status ${response.status}`;
+if (!response.ok) {
+  console.error(
+    "========== CHATBOX API ERROR =========="
+  );
 
-    throw new AppError(errorMessage, response.status || 502);
+  console.error(
+    "Status:",
+    response.status
+  );
+
+  console.error(
+    "Response:",
+    JSON.stringify(data, null, 2)
+  );
+
+  console.error(
+    "======================================"
+  );
+
+  let errorMessage;
+
+  if (typeof data?.message === "string") {
+    errorMessage = data.message;
+  } else if (typeof data?.error === "string") {
+    errorMessage = data.error;
+  } else if (data?.error) {
+    errorMessage = JSON.stringify(data.error);
+  } else {
+    errorMessage = JSON.stringify(data);
   }
+
+  throw new AppError(
+    errorMessage,
+    response.status || 502
+  );
+}
 
   return data;
 };
@@ -183,6 +212,88 @@ const sendMediaTemplateMessage = async ({
   return sendChatboxRequest(payload);
 };
 
+// ================= SEND TEMPLATE MESSAGE (BODY ONLY) =================
+// Used for approved WhatsApp templates that have NO header/media
+// component -- e.g. the public-registration-link template
+// ("event_registration_link", see
+// utils/buildRegistrationBodyParams.js for its exact {{1}}-{{4}}
+// mapping). Kept entirely separate from sendMediaTemplateMessage above
+// (which always attaches an image header for the QR template) so the
+// existing QR WhatsApp flow can never be affected by changes made here.
+//
+// phone: recipient WhatsApp number (e.g. Booking.mobileNumber)
+// templateName: the exact, already-approved template name
+//   (e.g. process.env.CHATBOX_REGISTRATION_TEMPLATE_NAME)
+// languageCode: the template's approved language code
+//   (e.g. process.env.CHATBOX_REGISTRATION_TEMPLATE_LANGUAGE)
+// bodyParams: ordered array of strings filling the template's {{1}},
+//   {{2}}, ... body placeholders, in order
+// buttonParam: optional string value for the template's single Dynamic
+//   URL "Visit Website" button (button index 0). When provided, a
+//   `button` component (sub_type "url") is appended after the `body`
+//   component, matching the Cloud-API component ordering/shape already
+//   used above for the header/body components. Omitted entirely when
+//   not provided, so templates with no button are unaffected.
+const sendTemplateMessage = async ({
+  phone,
+  templateName,
+  languageCode,
+  bodyParams = [],
+  buttonParam,
+}) => {
+  if (!phone || !String(phone).trim()) {
+    throw new AppError("WhatsApp template message requires a recipient phone number.", 400);
+  }
+
+  if (!templateName || !String(templateName).trim()) {
+    throw new AppError("WhatsApp template message requires a templateName.", 400);
+  }
+
+  if (!languageCode || !String(languageCode).trim()) {
+    throw new AppError("WhatsApp template message requires a languageCode.", 400);
+  }
+
+  const components = [
+    {
+      type: "body",
+      parameters: bodyParams.map((value) => ({
+        type: "text",
+        text: String(value ?? ""),
+      })),
+    },
+  ];
+
+  if (buttonParam !== undefined && buttonParam !== null && String(buttonParam).trim() !== "") {
+    components.push({
+      type: "button",
+      sub_type: "url",
+      index: "0",
+      parameters: [
+        {
+          type: "text",
+          text: String(buttonParam).trim(),
+        },
+      ],
+    });
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: String(phone).trim(),
+    type: "template",
+    template: {
+      name: String(templateName).trim(),
+      language: {
+        code: String(languageCode).trim(),
+      },
+      components,
+    },
+  };
+
+  return sendChatboxRequest(payload);
+};
+
 // ================= SEND TEXT MESSAGE =================
 // phone: recipient WhatsApp number
 // message: plain text body
@@ -212,5 +323,6 @@ const sendTextMessage = async ({ phone, message }) => {
 module.exports = {
   sendImageMessage,
   sendMediaTemplateMessage,
+  sendTemplateMessage,
   sendTextMessage,
 };

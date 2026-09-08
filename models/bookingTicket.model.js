@@ -45,6 +45,21 @@ const bookingTicketSchema = new mongoose.Schema(
       default: "",
     },
 
+    // ================= PUBLIC TICKET REGISTRATION =================
+    // Signed JWT (see utils/generateRegistrationToken.js) that grants
+    // access to this exact ticket on the public, unauthenticated
+    // registration flow (`/r/:token` -> GET/PUT /api/public/registration/:token).
+    // Generated once per ticket at booking-creation time and persisted
+    // here so it can be reused as-is on every WhatsApp resend — a new
+    // token must never be minted on resend, since that would silently
+    // invalidate any link the customer already has. Never returned by
+    // any public-facing API response (see
+    // services/publicRegistration.service.js's toPublicSafeTicket).
+    registrationToken: {
+      type: String,
+      default: "",
+    },
+
     qrImagePublicId: {
       type: String,
       default: "",

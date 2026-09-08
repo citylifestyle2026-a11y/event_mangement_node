@@ -13,6 +13,7 @@ const qrRoutes = require("./routes/qr.routes");
 const entryReportRoutes = require("./routes/entryReport.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
 const roleRoutes = require("./routes/role.routes");
+const publicRegistrationRoutes = require("./routes/publicRegistration.routes");
 const app = express();
 
 // ---------- Core Middlewares ----------
@@ -47,6 +48,8 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/roles", roleRoutes);
 // export
 app.use("/api/bookings", bookingRoutes);
+// publick register router
+app.use("/api/public/registration", publicRegistrationRoutes);
 // image 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
