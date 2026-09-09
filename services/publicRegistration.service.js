@@ -32,6 +32,7 @@ const uploadToCloudinary = require("../utils/cloudinary.util");
 const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
 const AppError = require("../utils/AppError");
 const verifyRegistrationToken = require("../utils/verifyRegistrationToken");
+const ticketDeliveryService = require("./ticketDelivery.service");
 
 // Shapes a ticket document down to the minimum fields safe to hand to an
 // unauthenticated caller — no bookingId, no internal Cloudinary public
@@ -141,6 +142,19 @@ const registerPublicUser = async (token, data, file) => {
   ticket.isRegistered = true;
 
   await ticket.save();
+
+  // ================= REGISTRATION COMPLETE -> PDF + WHATSAPP =================
+  // Public Registration counterpart of bookingTicket.service.js's
+  // identical call. Generates THIS exact ticket's own individual PDF,
+  // uploads it (existing Cloudinary setup), persists the URL on this
+  // ticket, and sends the "Download Ticket" WhatsApp template to the
+  // booking's mobile number — see services/ticketDelivery.service.js.
+  // Best-effort: never throws, so a PDF/WhatsApp failure can never fail
+  // this otherwise-successful public registration submit. Quantity > 1
+  // is handled correctly for free: each slot's own registerPublicUser
+  // call operates on its own `ticket` here, so each attendee still gets
+  // their own PDF/WhatsApp message.
+  await ticketDeliveryService.deliverTicketPdf(ticket);
 
   // Return every sibling ticket's up-to-date status in one response, so
   // the frontend can repaint all slots immediately after a successful

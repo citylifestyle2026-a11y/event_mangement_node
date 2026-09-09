@@ -65,6 +65,29 @@ const bookingTicketSchema = new mongoose.Schema(
       default: "",
     },
 
+    // ================= INDIVIDUAL TICKET PDF (POST-REGISTRATION) =================
+    // Publicly accessible Cloudinary URL of THIS exact ticket's own PDF
+    // (event image/name, attendee photo/name/phone, ticket name, and
+    // this ticket's own existing qrImage + ticketNumber). Generated once
+    // registration completes for this specific ticket (see
+    // services/ticketDelivery.service.js) — never a PDF shared across
+    // other tickets, even other tickets on the same booking. Regenerated
+    // (and the old Cloudinary "raw" file removed) on every fresh
+    // registerUser call, using ticketPdfPublicId to know what to clean
+    // up. Never returned on the public (unauthenticated) registration
+    // API — see publicRegistration.service.js's toPublicSafeTicket —
+    // it is only ever delivered via the WhatsApp "Download Ticket"
+    // template button.
+    ticketPdfUrl: {
+      type: String,
+      default: "",
+    },
+
+    ticketPdfPublicId: {
+      type: String,
+      default: "",
+    },
+
     status: {
       type: String,
       enum: ["Active", "Used", "Cancelled","Expired"],

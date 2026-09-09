@@ -6,6 +6,7 @@ const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
 const AppError = require("../utils/AppError");
 const whatsappService = require("./whatsapp.service");
 const buildQrNotificationBodyParams = require("../utils/buildQrNotificationBodyParams");
+const ticketDeliveryService = require("./ticketDelivery.service");
 
 // ================= REGISTER / UPDATE USER =================
 
@@ -51,6 +52,18 @@ const registerUser = async (ticketId, data, file, userId) => {
   ticket.isRegistered = true;
 
   await ticket.save();
+
+  // ================= REGISTRATION COMPLETE -> PDF + WHATSAPP =================
+  // Private Registration counterpart of publicRegistration.service.js's
+  // identical call. Generates THIS ticket's own individual PDF, uploads
+  // it (existing Cloudinary setup), persists the URL on this ticket, and
+  // sends the "Download Ticket" WhatsApp template to the booking's
+  // mobile number — see services/ticketDelivery.service.js. Best-effort:
+  // never throws, so a PDF/WhatsApp failure can never fail this
+  // otherwise-successful register-user request. `ticket` is mutated
+  // in-place with ticketPdfUrl/ticketPdfPublicId when it succeeds, so
+  // the object returned below reflects it.
+  await ticketDeliveryService.deliverTicketPdf(ticket);
 
   return ticket;
 };
