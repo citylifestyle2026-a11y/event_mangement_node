@@ -30,10 +30,14 @@ router.get(
 );
 
 // ================= PUBLIC REGISTER USER =================
+// Public Registration attendee-photo upload: uses the registration-
+// specific 100 MB limit (see middlewares/upload.middleware.js), not the
+// default 5 MB `upload` used by unrelated routes. Allowed image
+// formats/types are unchanged.
 router.put(
   "/:token",
   registrationTokenParamValidation,
-  upload.single("profileImage"),
+  upload.registrationPhotoUpload.single("profileImage"),
   registerUserValidation,
   validate,
   publicRegistrationController.registerUser
