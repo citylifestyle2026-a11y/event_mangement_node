@@ -117,6 +117,7 @@ const deliverTicketPdf = async (ticket) => {
     const templateLanguage =
       process.env.CHATBOX_TICKET_TEMPLATE_LANGUAGE || "en";
 
+<<<<<<< HEAD
     await whatsappService.sendTemplateMessage({
       phone: recipientMobileNumber,
       templateName,
@@ -124,6 +125,28 @@ const deliverTicketPdf = async (ticket) => {
       bodyParams: buildTicketDownloadBodyParams({ booking, event, ticket }),
       buttonParam: buildTicketDownloadBodyParams.buildTicketDownloadButtonParam(ticket),
     });
+=======
+    // WhatsApp send is isolated in its own try/catch so a Chatbox-side
+    // failure here is never confused in the logs with a PDF-generation
+    // or Cloudinary-upload failure above (both of which already
+    // succeeded by this point). Still best-effort/never-throws, exactly
+    // like the outer catch below — this only makes the actual failing
+    // step identifiable from the console output.
+    try {
+      await whatsappService.sendTemplateMessage({
+        phone: recipientMobileNumber,
+        templateName,
+        languageCode: templateLanguage,
+        bodyParams: buildTicketDownloadBodyParams({ booking, event, ticket }),
+        buttonParam: buildTicketDownloadBodyParams.buildTicketDownloadButtonParam(ticket),
+      });
+    } catch (whatsappError) {
+      console.error(
+        `Ticket PDF/WhatsApp delivery: WhatsApp send FAILED for ticket ${ticket?.ticketNumber} (PDF was still generated & uploaded successfully; ticketPdfUrl is saved). Recipient: ${recipientMobileNumber}. Reason:`,
+        whatsappError
+      );
+    }
+>>>>>>> main
 
     return upload;
   } catch (error) {
