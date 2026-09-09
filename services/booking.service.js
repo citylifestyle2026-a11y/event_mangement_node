@@ -10,7 +10,6 @@ const uploadToCloudinary = require("../utils/cloudinary.util");
 const AppError = require("../utils/AppError");
 const eventService = require("./event.service");
 const whatsappService = require("./whatsapp.service");
-const buildQrNotificationBodyParams = require("../utils/buildQrNotificationBodyParams");
 const buildRegistrationBodyParams = require("../utils/buildRegistrationBodyParams");
 const generateRegistrationToken = require("../utils/generateRegistrationToken");
 const mongoose = require("mongoose");
@@ -41,74 +40,37 @@ const generateBookingNumber = async (eventId, eventCode, session) => {
   return `${eventCode}-BK${String(counter.sequence).padStart(3, "0")}`;
 };
 
-// ================= SEND BOOKING QR VIA WHATSAPP (BEST-EFFORT) =================
-// Runs only after the booking + ticket transaction has already committed
-// successfully, and is intentionally never allowed to fail the booking:
-// Chatbox is an optional notification channel here, not part of the core
-// booking transaction. Any failure (missing Chatbox env config, Chatbox
-// API error, network error) is caught per-ticket and only logged —
-// never rethrown, and never surfaced in the API response — so a
-// WhatsApp outage can never turn a successful booking into a failed
-// request. The caught error's message is logged for diagnostics but the
-// CHATBOX_API_KEY itself is never part of that message (see
-// whatsapp.service.js), so nothing sensitive reaches the logs.
-//
-// Uses sendMediaTemplateMessage (an approved WhatsApp template), NOT
-// sendImageMessage. A freshly-booked customer has virtually never
-// messaged the business's WhatsApp number first, so the 24-hour
-// customer-service session window is closed — WhatsApp rejects a
-// free-form sendImageMessage in that case with error 131047
-// ("Re-engagement message"), even though the Chatbox API itself still
-// returns HTTP 200. Templates are the only supported way to deliver a
-// message outside that window. See utils/buildQrNotificationBodyParams.js
-// for the exact {{1}}-{{5}} mapping used by the approved
-// "event_booking_qr_pass" template.
-const sendBookingWhatsAppNotifications = async (booking, event, ticketType, tickets) => {
-  const templateName = process.env.CHATBOX_QR_TEMPLATE_NAME;
-  const templateLanguage = process.env.CHATBOX_QR_TEMPLATE_LANGUAGE || "en";
-
-  for (const ticket of tickets) {
-    try {
-      await whatsappService.sendMediaTemplateMessage({
-        phone: booking.mobileNumber,
-        templateName,
-        languageCode: templateLanguage,
-        imageUrl: ticket.qrImage,
-        bodyParams: buildQrNotificationBodyParams({ booking, event, ticketType, ticket }),
-      });
-    } catch (error) {
-      console.error(
-        `WhatsApp QR notification failed for ticket ${ticket.ticketNumber}:`,
-        error.message
-      );
-    }
-  }
-};
-
 // ================= SEND REGISTRATION LINK VIA WHATSAPP (BEST-EFFORT) =================
-// Separate from sendBookingWhatsAppNotifications above (the existing QR
-// flow) on purpose: BODY-ONLY template (whatsappService.sendTemplateMessage)
-// -- never the media/header template used for the QR pass
-// (whatsappService.sendMediaTemplateMessage), which this function never
-// calls and does not touch.
+// QR codes continue to be generated exactly as before (see the
+// createBooking loop below — untouched), but are intentionally NOT sent
+// over WhatsApp anymore. Instead, the existing public registration link
+// mechanism (utils/generateRegistrationToken.js / buildRegistrationUrl.js
+// via the template's Dynamic URL button — token/URL structure unchanged)
+// is sent to the SAME booking.mobileNumber.
 //
-// The approved "event_registration_link" template's BODY now carries
-// only booking.name / event.title / booking.bookingNumber (see
-// utils/buildRegistrationBodyParams.js); the registration link itself
-// is delivered via the template's Dynamic URL "Visit Website" button
-// instead. A single template message supports only one button
-// parameter, and each ticket has its own unique registrationToken, so
-// -- same per-ticket loop pattern as sendBookingWhatsAppNotifications
-// above -- one WhatsApp message is sent per ticket, each with the same
-// booking-level body text but that ticket's own token in the button.
+// Exactly ONE WhatsApp message is sent per booking (not one per ticket):
+// the button param uses the FIRST ticket's registrationToken. All tickets
+// created by this booking share the same bookingId, and the public
+// registration API (getRegistrationDetails) resolves that ticket's
+// bookingId back to the existing Booking.quantity, so opening this single
+// link is enough for the registration page/API to know the full booking
+// quantity — no new field, token, or URL shape is introduced.
+//
+// For quantity = 1 this is identical to the previous per-ticket loop
+// (exactly one ticket, exactly one message). For quantity > 1, this
+// avoids sending multiple different links (and multiple messages) for
+// what is, from the customer's point of view, a single registration.
 //
 // Runs only after the booking + ticket transaction has already
-// committed, and -- like the QR notification -- is never allowed to
-// fail the booking: any failure (missing Chatbox config, Chatbox API
-// error, network error) is caught per-ticket and only logged, never
-// rethrown, so a WhatsApp outage can never turn a successful booking
-// into a failed request.
+// committed, and is never allowed to fail the booking: any failure
+// (missing Chatbox config, Chatbox API error, network error) is caught
+// and only logged, never rethrown, so a WhatsApp outage can never turn a
+// successful booking into a failed request.
 const sendRegistrationWhatsAppNotification = async (booking, event, tickets) => {
+  if (!Array.isArray(tickets) || tickets.length === 0) {
+    return;
+  }
+
   const templateName =
     process.env.CHATBOX_REGISTRATION_TEMPLATE_NAME || "event_registration_link";
   const templateLanguage =
@@ -116,21 +78,25 @@ const sendRegistrationWhatsAppNotification = async (booking, event, tickets) => 
 
   const bodyParams = buildRegistrationBodyParams({ booking, event });
 
-  for (const ticket of tickets) {
-    try {
-      await whatsappService.sendTemplateMessage({
-        phone: booking.mobileNumber,
-        templateName,
-        languageCode: templateLanguage,
-        bodyParams,
-        buttonParam: buildRegistrationBodyParams.buildRegistrationButtonParam(ticket),
-      });
-    } catch (error) {
-      console.error(
-        `WhatsApp registration notification failed for booking ${booking.bookingNumber}, ticket ${ticket.ticketNumber}:`,
-        error
-      );
-    }
+  // Same token every ticket of this booking would otherwise be sent
+  // individually for — using the first one is sufficient since the
+  // registration details API resolves quantity from the booking, not
+  // from which specific ticket the token points to.
+  const primaryTicket = tickets[0];
+
+  try {
+    await whatsappService.sendTemplateMessage({
+      phone: booking.mobileNumber,
+      templateName,
+      languageCode: templateLanguage,
+      bodyParams,
+      buttonParam: buildRegistrationBodyParams.buildRegistrationButtonParam(primaryTicket),
+    });
+  } catch (error) {
+    console.error(
+      `WhatsApp registration notification failed for booking ${booking.bookingNumber}:`,
+      error
+    );
   }
 };
 
@@ -315,23 +281,13 @@ const createBooking = async (data, createdBy) => {
 
     await session.commitTransaction();
 
-    // ================= WHATSAPP QR NOTIFICATION (NON-BLOCKING) =================
-    // Sent only after the transaction has committed, so a WhatsApp failure
-    // can never roll back or fail an already-successful booking (see
-    // sendBookingWhatsAppNotifications above for the error-handling
-    // rationale). The response shape below is unchanged either way.
-    await sendBookingWhatsAppNotifications(
-      booking[0],
-      event,
-      ticketType,
-      insertedTickets
-    );
-
     // ================= WHATSAPP REGISTRATION NOTIFICATION (NON-BLOCKING) =================
-    // One message per ticket, each carrying that ticket's own
-    // registration token in the button -- see
-    // sendRegistrationWhatsAppNotification above. Independent of, and
-    // never able to affect, the QR notification call directly above it.
+    // QR codes were generated above exactly as before, but are NOT sent
+    // over WhatsApp anymore (see sendRegistrationWhatsAppNotification for
+    // details). Only the public registration link is sent, to the same
+    // booking.mobileNumber, after the transaction has already committed —
+    // so a WhatsApp failure can never roll back or fail an
+    // already-successful booking. The response shape below is unchanged.
     await sendRegistrationWhatsAppNotification(
       booking[0],
       event,
