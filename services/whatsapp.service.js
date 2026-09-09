@@ -1,5 +1,4 @@
 const AppError = require("../utils/AppError");
-const formatWhatsappPhoneNumber = require("../utils/formatWhatsappPhoneNumber");
 
 // ================= CHATBOX WHATSAPP CONFIG =================
 // Read lazily inside each call (not at module load) so a missing/misconfigured
@@ -118,7 +117,7 @@ const sendImageMessage = async ({ phone, imageUrl, caption }) => {
     messaging_product: "whatsapp",
     preview_url: false,
     recipient_type: "individual",
-    to: formatWhatsappPhoneNumber(phone),
+    to: String(phone).trim(),
     type: "image",
     image: {
       link: String(imageUrl).trim(),
@@ -180,7 +179,7 @@ const sendMediaTemplateMessage = async ({
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to: formatWhatsappPhoneNumber(phone),
+    to: String(phone).trim(),
     type: "template",
     template: {
       name: String(templateName).trim(),
@@ -281,7 +280,7 @@ const sendTemplateMessage = async ({
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to: formatWhatsappPhoneNumber(phone),
+    to: String(phone).trim(),
     type: "template",
     template: {
       name: String(templateName).trim(),
@@ -311,7 +310,7 @@ const sendTextMessage = async ({ phone, message }) => {
     messaging_product: "whatsapp",
     preview_url: false,
     recipient_type: "individual",
-    to: formatWhatsappPhoneNumber(phone),
+    to: String(phone).trim(),
     type: "text",
     text: {
       body: String(message),
