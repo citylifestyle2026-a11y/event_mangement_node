@@ -6,6 +6,26 @@
 // there is no admin/staff auth on this flow, so the token IS the identity
 // check. bookingTicket.service.js and its protected route/controller are
 // untouched; this file does not import from or alter them.
+//
+// ================= MULTI-QUANTITY REGISTRATION =================
+// A booking with quantity > 1 has multiple BookingTicket documents under
+// the same bookingId, but only ONE registration token/link is ever issued
+// (see routes/comment: "Do NOT change token/JWT or Public Registration
+// URL"). So the token no longer identifies "the one ticket" — it
+// identifies the BOOKING, via whichever ticket it was originally signed
+// for (the "anchor" ticket). Every read/write below resolves the token to
+// that anchor ticket's bookingId, then operates on the full set of
+// sibling tickets under that booking. The token payload/verification
+// itself is unchanged.
+//
+// Registration is always applied to the earliest still-unregistered
+// sibling ticket (stable creation order via `_id`), never to a ticket
+// chosen by the client. `data`/`file` still never carry or override which
+// ticket gets updated — this preserves the original "token is the sole
+// identity" guarantee while extending it to a set of tickets instead of
+// one, and makes it impossible to double-register the same slot on a
+// refresh/replay: once a ticket's isRegistered flips to true it drops out
+// of the "earliest unregistered" query for good.
 
 const BookingTicket = require("../models/bookingTicket.model");
 const uploadToCloudinary = require("../utils/cloudinary.util");
@@ -14,16 +34,10 @@ const AppError = require("../utils/AppError");
 const verifyRegistrationToken = require("../utils/verifyRegistrationToken");
 
 // Shapes a ticket document down to the minimum fields safe to hand to an
-// unauthenticated caller — no bookingId, no other tickets on the booking,
-// no internal Cloudinary public IDs, no qrToken, etc.
-//
-// `quantity` (optional) is the ONLY booking-level field exposed here, and
-// only when the caller (getRegistrationDetails) explicitly passes it in —
-// it is the existing Booking.quantity value, reused as-is (not a new/
-// duplicate field) so the public registration page/API can know how many
-// registration slots this booking's link covers. registerPublicUser does
-// not pass it, since it registers a single ticket and doesn't need it.
-const toPublicSafeTicket = (ticket, quantity) => ({
+// unauthenticated caller — no bookingId, no internal Cloudinary public
+// IDs, no qrToken, no _id, etc. Deliberately has no ticket identifier at
+// all, so the client can never pass one back in (see module comment).
+const toPublicSafeTicket = (ticket) => ({
   ticketNumber: ticket.ticketNumber,
   isRegistered: ticket.isRegistered,
   eventTitle: ticket.eventId?.title || "",
@@ -35,55 +49,72 @@ const toPublicSafeTicket = (ticket, quantity) => ({
         profileImage: ticket.attendee?.profileImage || "",
       }
     : null,
-  ...(quantity !== undefined ? { quantity } : {}),
 });
 
-// ================= VALIDATE PUBLIC REGISTRATION TOKEN =================
-// Decodes the token, confirms the ticket it points to still exists, and
-// returns what the public registration page needs to render (event name,
-// ticket type, whether it's already registered, and the booking's
-// quantity) — never the full BookingTicket document.
-//
-// `quantity` comes straight from the existing Booking.quantity field
-// (via the ticket's bookingId, which every ticket already stores) — it is
-// NOT a new field on any model, just reused/reflected through this
-// response so the frontend can determine how many registration slots to
-// render for this link. For quantity = 1 this behaves exactly as before
-// (a single ticket, single-registration flow); for quantity > 1 the same
-// number is now available to the caller.
-const getRegistrationDetails = async (token) => {
+// Resolves a token down to the bookingId it belongs to. Throws the same
+// "Ticket not found" error as before if the anchor ticket is gone, so
+// existing error handling/UI copy for a dead/invalid link is unaffected.
+const resolveBookingIdFromToken = async (token) => {
   const ticketId = verifyRegistrationToken(token);
 
-  const ticket = await BookingTicket.findById(ticketId)
+  const anchorTicket = await BookingTicket.findById(ticketId).select(
+    "bookingId"
+  );
+
+  if (!anchorTicket) {
+    throw new AppError("Ticket not found", 404);
+  }
+
+  return anchorTicket.bookingId;
+};
+
+// ================= VALIDATE PUBLIC REGISTRATION TOKEN =================
+// Decodes the token, resolves the booking it belongs to, and returns
+// every ticket under that booking so the public registration page can
+// render one card per quantity slot — each with its own persisted
+// isRegistered/attendee status straight from the DB. This is what makes
+// a page refresh correct: slot 1 shows "already registered" after reload
+// because the DB record, not any client state, is what's read here.
+const getRegistrationDetails = async (token) => {
+  const bookingId = await resolveBookingIdFromToken(token);
+
+  const tickets = await BookingTicket.find({ bookingId })
     .select("ticketNumber isRegistered attendee eventId ticketTypeId bookingId")
+    .sort({ _id: 1 })
     .populate("eventId", "title")
     .populate("ticketTypeId", "ticketName")
     .populate("bookingId", "quantity");
 
-  if (!ticket) {
+  if (!tickets.length) {
     throw new AppError("Ticket not found", 404);
   }
 
-  const quantity = ticket.bookingId?.quantity ?? 1;
+  const quantity = tickets[0].bookingId?.quantity ?? tickets.length;
 
-  return toPublicSafeTicket(ticket, quantity);
+  return {
+    quantity,
+    tickets: tickets.map(toPublicSafeTicket),
+  };
 };
 
 // ================= PUBLIC REGISTER USER =================
-// Registers the attendee on the single ticket the token was issued for.
-// The ticketId comes exclusively from the verified token — `data`/`file`
-// are never trusted to carry or override which ticket gets updated.
+// Registers the attendee on the earliest still-unregistered ticket under
+// the booking the token resolves to. If every ticket for this booking is
+// already registered (all quantity slots filled, or a slot 4+ attempt),
+// this rejects with 409 instead of allowing any further registration.
 const registerPublicUser = async (token, data, file) => {
-  const ticketId = verifyRegistrationToken(token);
+  const bookingId = await resolveBookingIdFromToken(token);
 
-  const ticket = await BookingTicket.findById(ticketId);
+  const ticket = await BookingTicket.findOne({
+    bookingId,
+    isRegistered: false,
+  }).sort({ _id: 1 });
 
   if (!ticket) {
-    throw new AppError("Ticket not found", 404);
-  }
-
-  if (ticket.isRegistered) {
-    throw new AppError("This ticket has already been registered.", 409);
+    throw new AppError(
+      "All tickets for this booking have already been registered.",
+      409
+    );
   }
 
   const { name, mobileNumber, email } = data;
@@ -111,10 +142,16 @@ const registerPublicUser = async (token, data, file) => {
 
   await ticket.save();
 
-  await ticket.populate("eventId", "title");
-  await ticket.populate("ticketTypeId", "ticketName");
+  // Return every sibling ticket's up-to-date status in one response, so
+  // the frontend can repaint all slots immediately after a successful
+  // submit without firing a second request.
+  const tickets = await BookingTicket.find({ bookingId })
+    .select("ticketNumber isRegistered attendee eventId ticketTypeId")
+    .sort({ _id: 1 })
+    .populate("eventId", "title")
+    .populate("ticketTypeId", "ticketName");
 
-  return toPublicSafeTicket(ticket);
+  return { tickets: tickets.map(toPublicSafeTicket) };
 };
 
 module.exports = {
