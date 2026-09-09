@@ -32,8 +32,6 @@
 // re-approved with a matching structure — do not change it here alone.
 const buildTicketDownloadBodyParams = ({ booking, event, ticket }) => [
   ticket?.attendee?.name || booking?.name,
-  event?.title,
-  ticket?.ticketNumber,
 ];
 
 // ================= BUTTON PARAMETER (DYNAMIC URL) =================
