@@ -2,7 +2,7 @@ const { query } = require("express-validator");
 // get all entery report
 const getAllEntryReportValidation = [
   query("eventId")
-    .optional()
+    .optional({ checkFalsy: true })
     .isMongoId()
     .withMessage("Invalid Event Id"),
 

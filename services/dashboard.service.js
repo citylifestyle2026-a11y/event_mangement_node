@@ -1,7 +1,7 @@
-import Event from "../models/event.model.js";
-import Booking from "../models/booking.model.js";
-import BookingTicket from "../models/bookingTicket.model.js";
-import TicketType from "../models/ticketType.model.js";
+const Event = require("../models/event.model.js");
+const Booking = require("../models/booking.model.js");
+const BookingTicket = require("../models/bookingTicket.model.js");
+const TicketType = require("../models/ticketType.model.js");
 
 // Get Active Event
 // An event is only considered "active" while isActive === true AND its
@@ -223,7 +223,7 @@ const getTotalBookingDetails = async (eventId) => {
     );
 };
 // Dashboard Summary
-export const getDashboardSummary = async () => {
+ const getDashboardSummary = async () => {
 
     const activeEvent = await getActiveEvent();
 
@@ -271,4 +271,7 @@ export const getDashboardSummary = async () => {
         bookingCounts,
         totalBookingDetails,
     };
+};
+module.exports = {
+    getDashboardSummary,
 };
