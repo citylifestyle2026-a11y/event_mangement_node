@@ -18,8 +18,10 @@
 //      ticketPdfPublicId).
 //   4. Sends the approved Chatbox "Download Ticket" WhatsApp template
 //      (existing services/whatsapp.service.js#sendTemplateMessage,
-//      already supports a Dynamic URL button param) to the SAME mobile
-//      number already stored on the booking.
+//      already supports a Dynamic URL button param) to THIS attendee's
+//      own entered mobile number (ticket.attendee.mobileNumber) — the
+//      exact number filled in on their own registration form card, not
+//      the booking/creator's mobileNumber.
 //
 // ================= BEST-EFFORT, NEVER BLOCKS REGISTRATION =================
 // Mirrors the existing "best-effort" WhatsApp philosophy already used at
@@ -90,21 +92,51 @@ const deliverTicketPdf = async (ticket) => {
     ticket.ticketPdfPublicId = upload.public_id;
 
     // ===== 4. WhatsApp "Download Ticket" template =====
-    // Sent to booking.mobileNumber — the SAME mobile number already
-    // stored on the booking (per requirement), regardless of which
-    // ticket/slot in a multi-quantity booking this attendee registered.
+    // Sent to THIS ticket's own attendee.mobileNumber — the exact mobile
+    // number entered on the registration form for THIS specific
+    // attendee (validated required on both Private and Public
+    // registration — see validators/bookingTicket.validation.js's
+    // registerUserValidation, reused by publicRegistration.validation.js
+    // — so it is always present by the time a ticket reaches
+    // isRegistered: true). This is deliberately NOT booking.mobileNumber
+    // (the booking creator's/original bulk-purchaser's number): for a
+    // quantity > 1 booking, every slot's attendee fills in their own
+    // mobile number on their own card (RegisterUsers.jsx /
+    // PublicRegisterUser.jsx), and each of them must receive only their
+    // own ticket PDF on the number they themselves entered — never the
+    // admin/creator's number, and never another attendee's number.
+    // booking.mobileNumber is kept only as a last-resort fallback for
+    // legacy/corrupted data where attendee.mobileNumber is somehow
+    // empty, so this best-effort step still has a chance to deliver
+    // rather than silently doing nothing.
+    const recipientMobileNumber =
+      ticket?.attendee?.mobileNumber || booking.mobileNumber;
+
     const templateName =
       process.env.CHATBOX_TICKET_TEMPLATE_NAME || "event_ticket_download";
     const templateLanguage =
       process.env.CHATBOX_TICKET_TEMPLATE_LANGUAGE || "en";
 
-    await whatsappService.sendTemplateMessage({
-      phone: booking.mobileNumber,
-      templateName,
-      languageCode: templateLanguage,
-      bodyParams: buildTicketDownloadBodyParams({ booking, event, ticket }),
-      buttonParam: buildTicketDownloadBodyParams.buildTicketDownloadButtonParam(ticket),
-    });
+    // WhatsApp send is isolated in its own try/catch so a Chatbox-side
+    // failure here is never confused in the logs with a PDF-generation
+    // or Cloudinary-upload failure above (both of which already
+    // succeeded by this point). Still best-effort/never-throws, exactly
+    // like the outer catch below — this only makes the actual failing
+    // step identifiable from the console output.
+    try {
+      await whatsappService.sendTemplateMessage({
+        phone: recipientMobileNumber,
+        templateName,
+        languageCode: templateLanguage,
+        bodyParams: buildTicketDownloadBodyParams({ booking, event, ticket }),
+        buttonParam: buildTicketDownloadBodyParams.buildTicketDownloadButtonParam(ticket),
+      });
+    } catch (whatsappError) {
+      console.error(
+        `Ticket PDF/WhatsApp delivery: WhatsApp send FAILED for ticket ${ticket?.ticketNumber} (PDF was still generated & uploaded successfully; ticketPdfUrl is saved). Recipient: ${recipientMobileNumber}. Reason:`,
+        whatsappError
+      );
+    }
 
     return upload;
   } catch (error) {
