@@ -68,6 +68,32 @@ const safeText = (value, fallback = "-") => {
   return str ? str : fallback;
 };
 
+// ================= REAL "FIT" DIMENSIONS OF AN IMAGE =================
+// pdfkit's `fit: [w, h]` option (used everywhere below) already scales an
+// image to sit inside a box WITHOUT distorting its original aspect ratio
+// — so the source image's own proportions (whatever shape it was
+// uploaded as: square, portrait, landscape) are always preserved and
+// never stretched or squashed.
+//
+// What `fit` does NOT give us is the image's *actual* resulting
+// width/height, which we need up front to vertically center other
+// content (e.g. the event title) against it. doc.openImage() reads the
+// image's real pixel dimensions so we can compute exactly what `fit`
+// will render it as, before drawing anything.
+const getImageFitDimensions = (doc, buffer, maxWidth, maxHeight) => {
+  try {
+    const img = doc.openImage(buffer);
+    const scale = Math.min(maxWidth / img.width, maxHeight / img.height);
+    return { width: img.width * scale, height: img.height * scale };
+  } catch (error) {
+    console.error("Ticket PDF: failed to read image dimensions:", error.message);
+    // Unknown real size — fall back to the full box. The actual drawn
+    // image is still never distorted (`fit` handles that independently),
+    // this only affects how much space alignment math reserves for it.
+    return { width: maxWidth, height: maxHeight };
+  }
+};
+
 // ================= BUILD ONE ATTENDEE'S TICKET PDF (BUFFER) =================
 // event / ticketType / booking / ticket are the already-fetched mongoose
 // (or lean) documents for THIS ticket's registration. Returns a Buffer —
@@ -92,30 +118,62 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
       const pageRight = doc.page.width - doc.page.margins.right;
       const contentWidth = pageRight - pageLeft;
 
-      // ================= EVENT IMAGE =================
-      if (eventImageBuffer) {
+      // ================= HEADER: EVENT IMAGE (LEFT) + EVENT TITLE (RIGHT) =================
+      const headerTop = doc.y;
+      const headerImageWidth = 130;
+      const headerImageHeight = 130;
+      const hasEventImage = Boolean(eventImageBuffer);
+      // No image? Title falls back to the full content width, centered —
+      // same as the previous stacked layout — instead of leaving a blank
+      // gap where the image would have been.
+      const headerTextX = hasEventImage ? pageLeft + headerImageWidth + 20 : pageLeft;
+      const headerTextWidth = hasEventImage
+        ? contentWidth - headerImageWidth - 20
+        : contentWidth;
+
+      // Real (aspect-ratio-correct) size the event image will render at,
+      // so the title next to it can be centered against its true height
+      // instead of the empty box height.
+      const eventImageDims = hasEventImage
+        ? getImageFitDimensions(doc, eventImageBuffer, headerImageWidth, headerImageHeight)
+        : { width: 0, height: 0 };
+
+      if (hasEventImage) {
         try {
-          doc.image(eventImageBuffer, pageLeft, doc.y, {
-            fit: [contentWidth, 220],
-            align: "center",
+          doc.image(eventImageBuffer, pageLeft, headerTop, {
+            fit: [headerImageWidth, headerImageHeight],
           });
-          doc.moveDown(0.5);
         } catch (error) {
           console.error("Ticket PDF: failed to embed event image:", error.message);
         }
       }
 
-      // ================= EVENT NAME =================
+      const titleText = safeText(event?.title, "Event");
+      doc.font("Helvetica-Bold").fontSize(22);
+      const titleHeight = doc.heightOfString(titleText, { width: headerTextWidth });
+      // Vertically center the title against the image's actual rendered
+      // height (not just against its box) — only nudges down when the
+      // image is taller than the title; a title that wraps taller than
+      // the image simply starts at the top, same as before.
+      const titleOffsetY = hasEventImage
+        ? Math.max(0, (eventImageDims.height - titleHeight) / 2)
+        : 0;
+
       doc
-        .fontSize(22)
         .fillColor("#111111")
-        .font("Helvetica-Bold")
-        .text(safeText(event?.title, "Event"), pageLeft, doc.y, {
-          width: contentWidth,
-          align: "center",
+        .text(titleText, headerTextX, headerTop + titleOffsetY, {
+          width: headerTextWidth,
+          align: hasEventImage ? "left" : "center",
         });
 
-      doc.moveDown(1);
+      // Row height is whichever ran taller — the image or the (possibly
+      // offset + wrapped) title — so the divider below never overlaps
+      // either one.
+      doc.y =
+        headerTop +
+        Math.max(eventImageDims.height, titleOffsetY + titleHeight) +
+        15;
+
       doc
         .moveTo(pageLeft, doc.y)
         .lineTo(pageRight, doc.y)
@@ -130,9 +188,11 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
       // ================= USER PHOTO =================
       if (userPhotoBuffer) {
         try {
+          // `fit` alone preserves the photo's original aspect ratio
+          // within the box — passing `width`/`height` at the same time
+          // (as before) is redundant with `fit` and, for a non-square
+          // uploaded photo, could distort or misplace it.
           doc.image(userPhotoBuffer, photoX, contentTop, {
-            width: photoSize,
-            height: photoSize,
             fit: [photoSize, photoSize],
           });
         } catch (error) {

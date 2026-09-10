@@ -5,7 +5,8 @@ const uploadToCloudinary = require("../utils/cloudinary.util");
 const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
 const AppError = require("../utils/AppError");
 const whatsappService = require("./whatsapp.service");
-const buildQrNotificationBodyParams = require("../utils/buildQrNotificationBodyParams");
+const pdfService = require("./pdf.service");
+const buildTicketDownloadBodyParams = require("../utils/buildTicketDownloadBodyParams");
 const ticketDeliveryService = require("./ticketDelivery.service");
 
 // ================= REGISTER / UPDATE USER =================
@@ -70,19 +71,20 @@ const registerUser = async (ticketId, data, file, userId) => {
 
 
 // ================= RESEND TICKET (WHATSAPP) =================
-// Re-sends the ticket's existing QR image using the SAME approved
-// WhatsApp template + body-param mapping used at booking-creation time
-// (see booking.service.js's sendBookingWhatsAppNotifications and
-// utils/buildQrNotificationBodyParams.js) — e.g. for when a customer
-// says they never received the original message, or lost it. Does not
-// regenerate the QR code/token and does not touch Cloudinary; it only
-// re-delivers the ticket's existing qrImage.
+// Re-sends the SAME "Download Ticket" PDF message that is sent right
+// after registration completes (see services/ticketDelivery.service.js),
+// instead of the old QR-image message — e.g. for when a customer says
+// they never received the original message, or lost it. Does not
+// regenerate the QR code/token; the ticket's existing PDF (or a freshly
+// generated one, if this ticket somehow doesn't have one yet) is simply
+// re-delivered.
 //
-// Unlike the booking-creation flow (where a WhatsApp failure is only
-// logged so it can never fail an otherwise-successful booking), this
-// endpoint's entire purpose IS the WhatsApp send — so a failure here is
-// intentionally NOT swallowed; it propagates to the controller so the
-// caller gets a real error response instead of a false "success".
+// Unlike the booking-creation/registration flow (where a WhatsApp
+// failure is only logged so it can never fail an otherwise-successful
+// request), this endpoint's entire purpose IS the WhatsApp send — so a
+// failure here is intentionally NOT swallowed; it propagates to the
+// controller so the caller gets a real error response instead of a
+// false "success".
 const resendTicket = async (ticketId) => {
   const ticket = await BookingTicket.findById(ticketId)
     .populate("bookingId")
@@ -104,19 +106,57 @@ const resendTicket = async (ticketId) => {
     );
   }
 
-  if (!ticket.qrImage) {
-    throw new AppError("This ticket has no QR image to resend.", 400);
+  if (!ticket.isRegistered) {
+    throw new AppError(
+      "This ticket has not been registered yet, so there is no ticket PDF to resend.",
+      400
+    );
   }
 
-  const templateName = process.env.CHATBOX_QR_TEMPLATE_NAME;
-  const templateLanguage = process.env.CHATBOX_QR_TEMPLATE_LANGUAGE || "en";
+  // Reuse the existing PDF if this ticket already has one (the normal
+  // case — every ticket gets one at registration time via
+  // ticketDelivery.service.js). Only regenerate it here as a fallback,
+  // e.g. for a ticket registered before PDF delivery existed.
+  if (!ticket.ticketPdfUrl) {
+    const upload = await pdfService.generateAndUploadTicketPdf({
+      event,
+      ticketType,
+      booking,
+      ticket,
+    });
 
-  await whatsappService.sendMediaTemplateMessage({
-    phone: booking.mobileNumber,
+    await BookingTicket.updateOne(
+      { _id: ticket._id },
+      {
+        $set: {
+          ticketPdfUrl: upload.url,
+          ticketPdfPublicId: upload.public_id,
+        },
+      }
+    );
+
+    ticket.ticketPdfUrl = upload.url;
+    ticket.ticketPdfPublicId = upload.public_id;
+  }
+
+  // Same recipient convention as ticketDelivery.service.js's
+  // deliverTicketPdf: this exact attendee's own entered mobile number,
+  // falling back to the booking's mobileNumber only if that's somehow
+  // empty.
+  const recipientMobileNumber =
+    ticket?.attendee?.mobileNumber || booking.mobileNumber;
+
+  const templateName =
+    process.env.CHATBOX_TICKET_TEMPLATE_NAME || "event_ticket_download";
+  const templateLanguage =
+    process.env.CHATBOX_TICKET_TEMPLATE_LANGUAGE || "en";
+
+  await whatsappService.sendTemplateMessage({
+    phone: recipientMobileNumber,
     templateName,
     languageCode: templateLanguage,
-    imageUrl: ticket.qrImage,
-    bodyParams: buildQrNotificationBodyParams({ booking, event, ticketType, ticket }),
+    bodyParams: buildTicketDownloadBodyParams({ booking, event, ticket }),
+    buttonParam: buildTicketDownloadBodyParams.buildTicketDownloadButtonParam(ticket),
   });
 
   return ticket;
