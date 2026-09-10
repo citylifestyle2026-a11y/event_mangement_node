@@ -4,10 +4,10 @@ const mongoose = require("mongoose");
 const connectDB = require("../config/db");
 const Admin = require("../models/admin.model");
 
-const ADMIN_NAME = process.env.SEED_ADMIN_NAME || "Super Admin";
-const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || "admin@gmail.com";
+const ADMIN_NAME = process.env.SEED_ADMIN_NAME || "City LifeStyle ";
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || "citylifestyle@gmail.com";
 const ADMIN_MOBILE = process.env.SEED_ADMIN_MOBILE || "9876543210";
-const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || "Admin@123";
+const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || "citylifestyle123";
 
 const run = async () => {
     await connectDB();

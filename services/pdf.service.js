@@ -25,16 +25,22 @@
 //
 // ================= VISUAL DESIGN =================
 // Redesigned as a single-page, ticket-card layout (custom page size,
-// not A4) modeled on the client's reference ticket: a maroon header
-// with a scalloped bottom edge, a circular event-image badge sitting on
-// that scalloped boundary, decorative gold side borders, a bordered
-// "VENUE" box (event-wise — event.venueName/address, only shown when
-// the event actually has one; never a hardcoded venue), bordered
-// attendee-photo/QR boxes side by side, and a small "Powered by City
-// Lifestyle" brand mark bottom-right (the platform's own static brand
-// asset — see assets/branding/city-lifestyle-logo.jpg — NOT part of
-// any event's own data, so it is identical and correct across every
+// not A4) modeled on the client's reference ticket for LAYOUT ONLY: a
+// header with a scalloped bottom edge, a circular event-image badge
+// sitting on that scalloped boundary, decorative side borders, a
+// bordered "VENUE" box (event-wise — event.venueName/address, only
+// shown when the event actually has one; never a hardcoded venue),
+// bordered attendee-photo/QR boxes side by side, and a small "Powered
+// by City Lifestyle" brand mark bottom-right (the platform's own static
+// brand asset — see assets/branding/city-lifestyle-logo.jpg — NOT part
+// of any event's own data, so it is identical and correct across every
 // event/tenant).
+//
+// COLORS are intentionally NOT copied from that reference (it uses a
+// maroon + gold palette). Instead the whole ticket uses a navy palette
+// sampled from the City Lifestyle brand logo itself — see the
+// BRAND_PRIMARY / BRAND_PRIMARY_DARK / BRAND_ACCENT constants below for
+// the exact values and where each is used.
 
 const fs = require("fs");
 const path = require("path");
@@ -59,6 +65,22 @@ try {
 } catch (error) {
   console.error("Ticket PDF: failed to load brand logo asset:", error.message);
 }
+
+// ================= BRAND COLOR PALETTE (FROM THE CITY LIFESTYLE LOGO) =================
+// Sampled directly from the City Lifestyle logo (a deep navy circle with
+// a subtle light-to-dark diagonal gradient and a white script wordmark —
+// no second brand hue). Every color below stays inside that same navy
+// family — no maroon/red/gold — so the ticket visually belongs to this
+// brand rather than the (maroon + gold) reference ticket it's modeled
+// on. The reference ticket's LAYOUT (scalloped header, circular event
+// badge, decorative side ribbons, venue box, photo/QR boxes, footer,
+// brand mark) is intentionally kept — only the colors changed.
+const BRAND_PRIMARY = "#154063"; // Logo's lighter navy edge (sampled ~rgb(21,64,99)). Header fill, ribbons, dividers, borders, VENUE pill, footer note.
+const BRAND_PRIMARY_DARK = "#102E52"; // Logo's deeper navy edge (sampled ~rgb(16,46,82)). Fallback event badge, ribbon shading.
+const BRAND_ACCENT = "#B6C6D0"; // Soft silvery tint of the navy (≈30% navy / 70% white) — a premium, non-gold highlight for ring accents and ribbon shading. Deliberately desaturated rather than an unrelated color like gold.
+const TEXT_DARK = "#102E52"; // Same deep navy, reused for headings (event title, venue name, attendee name/ticket number) so text reads as part of the brand rather than plain black.
+const GRAY = "#6b7280"; // Neutral secondary text (address, mobile/email/booking lines) — intentionally colorless so it never competes with the brand navy.
+const BORDER_GRAY = "#c7d1da"; // Light navy-tinted grey for the photo/QR box borders — ties even the "neutral" borders back into the palette instead of a flat generic grey.
 
 // ================= FETCH REMOTE IMAGE AS BUFFER =================
 // Event image / attendee photo / QR image are all already-hosted
@@ -176,19 +198,23 @@ const drawContainImage = (doc, buffer, x, y, w, h) => {
   }
 };
 
-// ================= DECORATIVE GOLD SIDE BORDER =================
-const drawSideRibbon = (doc, x, ribbonWidth, pageHeight, maroon) => {
+// ================= DECORATIVE SIDE BORDER (BRAND NAVY) =================
+const drawSideRibbon = (doc, x, ribbonWidth, pageHeight) => {
   const gradient = doc.linearGradient(x, 0, x + ribbonWidth, 0);
-  gradient.stop(0, "#a9791a").stop(0.5, "#f0d789").stop(1, "#a9791a");
+  gradient.stop(0, BRAND_PRIMARY_DARK).stop(0.5, BRAND_ACCENT).stop(1, BRAND_PRIMARY_DARK);
   doc.rect(x, 0, ribbonWidth, pageHeight).fill(gradient);
 
+  // White diamonds with a thin navy outline stay visible against both
+  // the dark ends AND the lighter silvery middle of the gradient above
+  // (a single non-white diamond color couldn't contrast with both).
   const diamondSize = 6;
   for (let dy = 22; dy < pageHeight - 10; dy += 34) {
     doc.save();
     doc.rotate(45, { origin: [x + ribbonWidth / 2, dy] });
     doc
       .rect(x + ribbonWidth / 2 - diamondSize / 2, dy - diamondSize / 2, diamondSize, diamondSize)
-      .fill(maroon);
+      .lineWidth(0.5)
+      .fillAndStroke("#ffffff", BRAND_PRIMARY_DARK);
     doc.restore();
   }
 };
@@ -219,12 +245,10 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
-      const MAROON = "#7a0c24";
-      const MAROON_DARK = "#57081a";
-      const GOLD = "#c9a227";
-      const NAVY = "#16214a";
-      const GRAY = "#6b7280";
-      const BORDER_GRAY = "#c9c9d1";
+      const MAROON = BRAND_PRIMARY;
+      const MAROON_DARK = BRAND_PRIMARY_DARK;
+      const GOLD = BRAND_ACCENT;
+      const NAVY = TEXT_DARK;
 
       const RIBBON_W = 14;
       const CONTENT_PAD = 16;
@@ -233,10 +257,10 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
       const contentWidth = contentRight - contentLeft;
 
       // ================= DECORATIVE SIDE BORDERS =================
-      drawSideRibbon(doc, 0, RIBBON_W, PAGE_HEIGHT, MAROON);
-      drawSideRibbon(doc, PAGE_WIDTH - RIBBON_W, RIBBON_W, PAGE_HEIGHT, MAROON);
+      drawSideRibbon(doc, 0, RIBBON_W, PAGE_HEIGHT);
+      drawSideRibbon(doc, PAGE_WIDTH - RIBBON_W, RIBBON_W, PAGE_HEIGHT);
 
-      // ================= MAROON HEADER + SCALLOPED EDGE =================
+      // ================= HEADER + SCALLOPED EDGE (BRAND NAVY) =================
       const HEADER_HEIGHT = 190;
       doc.rect(RIBBON_W, 0, PAGE_WIDTH - RIBBON_W * 2, HEADER_HEIGHT).fill(MAROON);
 
