@@ -179,6 +179,26 @@ const updateEventValidation = [
     }),
 ];
 
+// Delete Event Validation
+// Manual delete requires the currently authenticated Admin to re-enter
+// their own email + password (confirmation step happens on the
+// frontend before this request is ever sent). These are just
+// presence/format checks — the actual credential verification against
+// the authenticated admin happens in eventController.deleteEvent.
+const deleteEventValidation = [
+  body("email")
+    .trim()
+    .notEmpty()
+    .withMessage("Admin email is required")
+    .isEmail()
+    .withMessage("Please enter a valid email address"),
+
+  body("password")
+    .trim()
+    .notEmpty()
+    .withMessage("Admin password is required"),
+];
+
 // Validation Result
 // Previously this always returned a fixed "Validation Failed" message,
 // leaving the frontend unable to show the user anything specific. The
@@ -205,5 +225,6 @@ const validate = (req, res, next) => {
 module.exports = {
   createEventValidation,
   updateEventValidation,
+  deleteEventValidation,
   validate,
 };

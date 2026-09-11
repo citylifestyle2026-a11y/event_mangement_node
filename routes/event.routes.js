@@ -9,6 +9,7 @@ const eventController = require("../controllers/event.controller");
 const {
   createEventValidation,
   updateEventValidation,
+  deleteEventValidation,
   validate,
 } = require("../validators/event.validator");
 
@@ -47,9 +48,14 @@ router.put(
 );
 
 // Delete Event
+// Body must include { email, password } for the currently authenticated
+// Admin — verified in eventController.deleteEvent before the existing
+// delete transaction runs.
 router.delete(
   "/:id/delete",
   protect,
+  deleteEventValidation,
+  validate,
   eventController.deleteEvent
 );
 

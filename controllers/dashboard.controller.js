@@ -1,7 +1,7 @@
-import * as dashboardService from "../services/dashboard.service.js";
-import Event from "../models/event.model.js";
+const dashboardService = require("../services/dashboard.service");
+
 // dasboard summery
-export const getDashboardSummary = async (req, res, next) => {
+const getDashboardSummary = async (req, res, next) => {
     try {
         const data = await dashboardService.getDashboardSummary();
 
@@ -13,4 +13,8 @@ export const getDashboardSummary = async (req, res, next) => {
     } catch (error) {
         next(error);
     }
+};
+
+module.exports = {
+    getDashboardSummary,
 };
