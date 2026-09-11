@@ -59,10 +59,16 @@ const getTodayBooking = async (eventId) => {
 
 
 // Total Booking
+// "Total Booking" is the total number of TICKETS booked (sum of each
+// Booking's quantity), not the number of Booking documents — e.g. 2
+// Booking records with quantity 2 each must read as 4, not 2.
 const getTotalBooking = async (eventId) => {
-    return await Booking.countDocuments({
-        eventId,
-    });
+    const result = await Booking.aggregate([
+        { $match: { eventId, isDeleted: false } },
+        { $group: { _id: null, qty: { $sum: "$quantity" } } },
+    ]);
+
+    return result[0]?.qty || 0;
 };
 
 
@@ -239,10 +245,74 @@ const getTotalBookingDetails = async (eventId) => {
         (a, b) => new Date(a.date) - new Date(b.date)
     );
 };
-// Dashboard Summary
- const getDashboardSummary = async () => {
+// ================= DASHBOARD COUNTS (SCOPED TO ONE EVENT) =================
+// Backs the 4 standalone stat cards (Total Bookings, Registered Tickets,
+// Pending Registrations, Scanned Entries). Deliberately scoped to the
+// SINGLE event resolved by the caller (whichever one is currently shown
+// on the dashboard) rather than summed across every event in the system —
+// mixing two different events' numbers into one total is misleading, not
+// a feature. An event's own counts stay fully available for as long as
+// the Event document exists (active or expired) — only an explicit manual
+// delete removes it (and its Bookings/BookingTickets in the same
+// transaction), so nothing further needs excluding here once that
+// happens. "Total Bookings" is the total number of TICKETS (sum of
+// Booking.quantity), matching getTotalBooking above — e.g. 2 Booking
+// records with quantity 2 each read as 4, not 2.
+const getDashboardCounts = async (eventId) => {
+    if (!eventId) {
+        return {
+            totalBookings: 0,
+            registeredTickets: 0,
+            pendingRegistrations: 0,
+            scannedEntries: 0,
+        };
+    }
 
-    const activeEvent = await getActiveEvent();
+    const [totalBookingsAgg, registeredTickets, pendingRegistrations, scannedEntries] =
+        await Promise.all([
+            Booking.aggregate([
+                { $match: { eventId, isDeleted: false } },
+                { $group: { _id: null, qty: { $sum: "$quantity" } } },
+            ]),
+            BookingTicket.countDocuments({
+                eventId,
+                isRegistered: true,
+            }),
+            BookingTicket.countDocuments({
+                eventId,
+                isRegistered: false,
+            }),
+            BookingTicket.countDocuments({
+                eventId,
+                status: "Used",
+            }),
+        ]);
+
+    return {
+        totalBookings: totalBookingsAgg[0]?.qty || 0,
+        registeredTickets,
+        pendingRegistrations,
+        scannedEntries,
+    };
+};
+
+// Dashboard Summary
+// `requestedEventId` (optional): lets the dashboard's own Event selector
+// show any ONE non-deleted event on demand — active or inactive/expired —
+// instead of only ever auto-picking the currently running one. When
+// omitted, behavior is unchanged: getActiveEvent()'s existing
+// running-event-else-last-expired-event resolution is used. Either way,
+// every number returned (the event details AND the 4 stat cards) is
+// scoped to that SAME single event — never combined across multiple
+// events.
+ const getDashboardSummary = async (requestedEventId) => {
+
+    const activeEvent = requestedEventId
+        ? await Event.findOne({
+            _id: requestedEventId,
+            isDeleted: { $ne: true },
+        }).lean()
+        : await getActiveEvent();
 
     if (!activeEvent) {
         return {
@@ -257,9 +327,16 @@ const getTotalBookingDetails = async (eventId) => {
             passBookingCounts: [],
             bookingCounts: [],
             totalBookingDetails: [],
+            totalBookings: 0,
+            registeredTickets: 0,
+            pendingRegistrations: 0,
+            scannedEntries: 0,
         };
     }
 
+    // Scoped to this single resolved/selected event only — see
+    // getDashboardCounts above.
+    const dashboardCounts = await getDashboardCounts(activeEvent._id);
 
     const todayBooking = await getTodayBooking(activeEvent._id);
     const todayPassResult = await getTodayPassBooking(activeEvent._id);
@@ -287,6 +364,7 @@ const getTotalBookingDetails = async (eventId) => {
         passBookingCounts: totalPassResult.passBookingCounts,
         bookingCounts,
         totalBookingDetails,
+        ...dashboardCounts,
     };
 };
 module.exports = {

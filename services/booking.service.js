@@ -330,9 +330,11 @@ const createBooking = async (data, createdBy) => {
 //   from Event A and Event B are both included when both are active.
 //   Previously this used Event.findOne(...), which silently discarded
 //   every active event but the earliest-starting one. This "no eventId"
-//   overview is intentionally left scoped to currently-running events
-//   only (unchanged by Step 5) — pick a specific eventId to see a given
-//   event's bookings regardless of its expiry status.
+//   overview must include EXPIRED events too — expiring an event must
+//   never hide its historical bookings (only a manual delete may), so
+//   the endDateTime >= now restriction that used to be here has been
+//   removed. isActive is left untouched: it's a separate, manually
+//   controlled admin flag unrelated to time-based expiry.
 const resolveEventScope = async (eventId) => {
   if (eventId) {
     const event = await Event.findOne({
@@ -343,12 +345,9 @@ const resolveEventScope = async (eventId) => {
     return event ? { eventIds: [event._id], events: [event] } : { eventIds: [], events: [] };
   }
 
-  const now = new Date();
-
   const activeEvents = await Event.find({
     isActive: true,
     isDeleted: { $ne: true },
-    endDateTime: { $gte: now },
   })
     .sort({ startDateTime: 1 })
     .select("_id title startDateTime endDateTime");

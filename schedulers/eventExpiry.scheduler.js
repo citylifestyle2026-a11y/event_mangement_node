@@ -1,86 +1,38 @@
 // schedulers/eventExpiry.scheduler.js
 //
-// Automatic expired-event cleanup. No cron / job-queue / background-worker
-// mechanism existed anywhere in this backend before this file — the only
-// prior "expiry" handling (dashboard.service.js's getActiveEvent,
-// booking.service.js's createBooking/getAllBookings, entryReport.service.js)
-// was a read-time `endDateTime < now` check; none of it ever deleted
-// anything, and nothing ran on its own. This file is the smallest addition
-// that makes cleanup automatic without adding any new npm dependency: a
-// plain setInterval loop using Node's built-in timer API, calling
-// eventService.deleteExpiredEvents() (see services/event.service.js) on a
-// fixed cadence.
+// ================= DISABLED: EXPIRY MUST NEVER AUTO-DELETE =================
+// Per the app's rule, an expired event must NOT be treated as deleted —
+// its bookings, entry-report data, and dashboard counts must remain fully
+// available until an Admin explicitly deletes it (see
+// eventService.deleteEvent, the ONLY supported deletion path, which
+// requires admin email/password verification at the controller layer).
 //
-// This module does nothing on require — it only exports functions. Wiring
-// it in requires exactly ONE line added to the application's startup file
-// (the file that currently calls connectDB()), for example:
+// This scheduler previously called a `eventService.deleteExpiredEvents()`
+// method that performed automatic cleanup of expired events. That method
+// does not exist on eventService (event.service.js has no such export),
+// and this scheduler was never wired into any app startup file in this
+// project, so it has never actually run. It is kept here only as a
+// disabled no-op (rather than removed outright) so any external code that
+// already imports start/stopEventExpiryScheduler keeps working, but it is
+// intentionally hardcoded to do nothing — automatic expiry deletion must
+// never be reintroduced here or anywhere else.
 //
-//   const connectDB = require("./config/db");
-//   const { startEventExpiryScheduler } = require("./schedulers/eventExpiry.scheduler");
-//
-//   connectDB().then(() => {
-//     startEventExpiryScheduler();
-//   });
-//
-// It must be started AFTER the Mongoose connection is established, so the
-// first cleanup tick never runs against a disconnected DB. No server.js /
-// app.js was included in the uploaded backend, so that one-line call could
-// not be added here — it needs to be added to your actual startup file.
-
-const eventService = require("../services/event.service");
-
-// 5 minutes: frequent enough that an expired event's data is purged
-// promptly, infrequent enough to add no meaningful DB load. This is the
-// only place the cadence is defined.
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+// If a periodic job is ever needed again for something else (e.g. purely
+// cosmetic status housekeeping), it must NOT delete Event/Booking/
+// BookingTicket documents. Deletion must stay exclusively behind the
+// manual, admin-verified delete flow.
 
 let intervalHandle = null;
 
-const runCleanup = async () => {
-  try {
-    const result = await eventService.deleteExpiredEvents();
+// No-op: intentionally does not delete anything.
+const runCleanup = async () => {};
 
-    if (result.processed > 0 || result.failed > 0) {
-      console.log(
-        `[eventExpiry.scheduler] processed=${result.processed} failed=${result.failed}`,
-        result.details
-      );
-    }
-  } catch (error) {
-    // deleteExpiredEvents already isolates per-event failures internally
-    // (see event.service.js) — this catch only guards against something
-    // failing before that loop even starts (e.g. a transient DB
-    // connection error), so a single bad tick can never kill the
-    // interval or crash the process.
-    console.error("[eventExpiry.scheduler] cleanup run failed:", error);
-  }
-};
-
-// Starts the recurring cleanup. Safe to call more than once — a second
-// call is a no-op rather than creating a second overlapping interval.
+// No-op: does not start any interval/timer. Safe to call; does nothing.
 const startEventExpiryScheduler = () => {
-  if (intervalHandle) {
-    return intervalHandle;
-  }
-
-  // Run once immediately, so an event that expired while the server was
-  // down (or during the gap before the first interval tick) doesn't sit
-  // around undeleted for a full interval.
-  runCleanup();
-
-  intervalHandle = setInterval(runCleanup, CLEANUP_INTERVAL_MS);
-
-  // Don't let this timer keep the Node process alive on its own (e.g.
-  // during graceful shutdown or tests).
-  if (typeof intervalHandle.unref === "function") {
-    intervalHandle.unref();
-  }
-
   return intervalHandle;
 };
 
-// Stops the recurring cleanup. Exposed mainly for tests / graceful
-// shutdown; normal server operation never needs to call this.
+// No-op: nothing is ever started, so there is nothing to stop.
 const stopEventExpiryScheduler = () => {
   if (intervalHandle) {
     clearInterval(intervalHandle);

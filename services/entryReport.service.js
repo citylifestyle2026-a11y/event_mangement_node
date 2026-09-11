@@ -72,37 +72,46 @@ const activeEventFilter = () => ({
   isActive: true,
 });
 
-// ================= RESOLVE "CURRENT" EVENT (NO eventId SUPPLIED) =================
-// Legacy callers that don't pass a specific eventId still need exactly
-// one event picked for them. Prefers a currently-running (non-expired)
-// event, sorted the same way as before (earliest startDateTime first).
-// Only when no event is currently running does this fall back to the
-// most recently expired (but not yet deleted) event, so Entry Report
-// keeps showing that event's historical data instead of going empty the
-// moment the last running event expires (Step 5). A deleted event's
-// document no longer exists at all, so nothing further needs excluding.
-const resolveDefaultActiveEvent = async () => {
-  const now = new Date();
+// ================= RESOLVE EVENT SCOPE (SHARED) =================
+// Mirrors booking.service.js's resolveEventScope so Booking and Entry
+// Report behave identically for "All Events" vs a specific event:
+// - requestedEventId supplied: scope is exactly that one event, as long
+//   as it's isActive and not deleted. Its own entry-report data stays
+//   accessible for as long as the Event document exists, even after it
+//   has expired (Step 5) — only a manual delete removes it.
+// - requestedEventId omitted ("All Events" — the dropdown's own default):
+//   scope is EVERY isActive, non-deleted event combined, not just a
+//   single "current" one, so entries from Event A and Event B both show
+//   together. Previously this resolved to a single "current" event only,
+//   which is why picking "All Events" never actually showed more than
+//   one event's rows — that mismatched what the dropdown/table already
+//   claimed to do.
+const resolveEventScope = async (requestedEventId) => {
+  if (requestedEventId) {
+    const event = await Event.findOne({
+      _id: requestedEventId,
+      ...activeEventFilter(),
+    })
+      .select("_id name title startDateTime endDateTime")
+      .lean();
 
-  const runningEvent = await Event.findOne({
-    isActive: true,
-    endDateTime: { $gte: now },
-  })
+    return event
+      ? { eventIds: [event._id], event }
+      : { eventIds: [], event: null };
+  }
+
+  const events = await Event.find(activeEventFilter())
     .sort({ startDateTime: 1 })
     .select("_id name title startDateTime endDateTime")
     .lean();
 
-  if (runningEvent) {
-    return runningEvent;
-  }
-
-  return Event.findOne({
-    isActive: true,
-    endDateTime: { $lt: now },
-  })
-    .sort({ endDateTime: -1 })
-    .select("_id name title startDateTime endDateTime")
-    .lean();
+  return {
+    eventIds: events.map((e) => e._id),
+    // Multiple events in scope: there's no single "the event" to return
+    // (unchanged from before — callers already handle event: null, e.g.
+    // EntryReport.jsx's date-range bounds fall back to null gracefully).
+    event: null,
+  };
 };
 
 // Restricts a query filter to only the records the authenticated user is
@@ -158,32 +167,21 @@ const getAllEntryReports = async (query, currentUser) => {
   limit = parseInt(limit, 10) || 10;
   const skip = (page - 1) * limit;
 
-  // ================= ACTIVE EVENT =================
-  // The frontend now selects a specific event (Event dropdown) and sends
-  // its id as eventId. That id is still never trusted blindly — it must
-  // also satisfy the same activeEventFilter() every other event lookup in
-  // this module uses, so Entry Report can never return records from an
-  // inactive/expired/forged eventId.
-  //
-  // If eventId isn't supplied at all (older/legacy callers), fall back to
-  // the previous default: the single "current" active event, sorted
-  // ascending by startDateTime so a Running event (startDateTime <= now)
-  // always sorts ahead of any Upcoming event — same as before.
-  let activeEvent;
+  // ================= EVENT SCOPE =================
+  // The frontend selects a specific event (Event dropdown) and sends its
+  // id as eventId, or sends no eventId at all for "All Events" — the
+  // dropdown's own default. That id is still never trusted blindly — it
+  // must also satisfy the same activeEventFilter() every other event
+  // lookup in this module uses, so Entry Report can never return records
+  // from an inactive/forged eventId. "All Events" combines every isActive
+  // event's data (see resolveEventScope above), matching the dropdown's
+  // own default and Booking's equivalent behavior.
+  const { eventIds, event: activeEvent } = await resolveEventScope(
+    requestedEventId
+  );
 
-  if (requestedEventId) {
-    activeEvent = await Event.findOne({
-      _id: requestedEventId,
-      ...activeEventFilter(),
-    })
-      .select("_id name title startDateTime endDateTime")
-      .lean();
-  } else {
-    activeEvent = await resolveDefaultActiveEvent();
-  }
-
-  if (!activeEvent) {
-    // No matching active event: respond gracefully so the UI can show its
+  if (eventIds.length === 0) {
+    // No matching event(s): respond gracefully so the UI can show its
     // normal empty state instead of an error.
     return {
       event: null,
@@ -192,12 +190,10 @@ const getAllEntryReports = async (query, currentUser) => {
     };
   }
 
-  const eventId = activeEvent._id;
-
   // ================= FILTER =================
 
   const filter = {
-    eventId,
+    eventId: { $in: eventIds },
     status: "Used",
   };
 
@@ -315,34 +311,21 @@ const exportEntryReport = async (query, res, currentUser) => {
     eventId: requestedEventId,
   } = query;
 
-  // ================= ACTIVE EVENT =================
-  // Same resolution as getAllEntryReports: prefer the client-supplied
-  // eventId (still constrained to activeEventFilter()), so export always
-  // targets the same event currently selected in the table. Falls back to
-  // the previous single-active-event default when no eventId is sent.
-  let activeEvent;
+  // ================= EVENT SCOPE =================
+  // Same resolution as getAllEntryReports (see resolveEventScope above):
+  // a specific eventId if supplied, otherwise every isActive event
+  // combined ("All Events") — never just a single default event — so the
+  // exported file always matches exactly what the table is showing.
+  const { eventIds } = await resolveEventScope(requestedEventId);
 
-  if (requestedEventId) {
-    activeEvent = await Event.findOne({
-      _id: requestedEventId,
-      ...activeEventFilter(),
-    })
-      .select("_id name title startDateTime endDateTime")
-      .lean();
-  } else {
-    activeEvent = await resolveDefaultActiveEvent();
-  }
-
-  if (!activeEvent) {
+  if (eventIds.length === 0) {
     throw new Error("No active event found.");
   }
-
-  const eventId = activeEvent._id;
 
   // ================= FILTER =================
 
   const filter = {
-    eventId,
+    eventId: { $in: eventIds },
     status: "Used",
   };
 
