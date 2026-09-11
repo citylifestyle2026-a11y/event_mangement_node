@@ -3,76 +3,40 @@ const Booking = require("../models/booking.model.js");
 const BookingTicket = require("../models/bookingTicket.model.js");
 const TicketType = require("../models/ticketType.model.js");
 
-// ================= OVERALL DASHBOARD COUNTS (ALL EVENTS) =================
-// Unlike the rest of this file (which is scoped to a single "active"
-// event), these 4 counts are deliberately NOT event-scoped: they cover
-// every existing, non-deleted event — including expired ones, since
-// expired events remain in the database (and fully visible) until an
-// Admin manually deletes them (see eventService.deleteEvent). A manual
-// Event delete hard-deletes its Bookings/BookingTickets in the same
-// transaction (see event.service.js's deleteEvent cascade), so there is
-// no need to additionally filter these queries by which events still
-// exist — a Booking/BookingTicket document can only exist here if its
-// parent Event is still in the database.
-//
-// - Total Bookings: SUM of Booking.quantity (not a document count) —
-//   a single Booking record can carry quantity > 1 (e.g. one entry
-//   booking 5 tickets at once), so counting documents undercounted the
-//   actual number of tickets booked. Also excludes bookingStatus:
-//   "Cancelled" (mirrors getPassBookingBreakdown's match below — a
-//   cancelled booking's tickets shouldn't count as "booked").
-// - Registered Tickets: BookingTicket.isRegistered === true (set once
-//   the attendee completes the public registration flow — see
-//   bookingTicket.service.js's registerUser).
-// - Pending Registrations: BookingTicket.isRegistered === false — the
-//   exact inverse of the above, same collection.
-// - Scanned Entries: BookingTicket.status === "Used" — the same filter
-//   already used by entryReport.service.js to mean "actually scanned at
-//   the gate".
-const getDashboardCounts = async () => {
-    const [totalBookingsAgg, registeredTickets, pendingRegistrations, scannedEntries] =
-        await Promise.all([
-            Booking.aggregate([
-                {
-                    $match: {
-                        isDeleted: { $ne: true },
-                        bookingStatus: "Confirmed",
-                    },
-                },
-                { $group: { _id: null, totalQty: { $sum: "$quantity" } } },
-            ]),
-            BookingTicket.countDocuments({ isRegistered: true }),
-            BookingTicket.countDocuments({ isRegistered: false }),
-            BookingTicket.countDocuments({ status: "Used" }),
-        ]);
-
-    const totalBookings = totalBookingsAgg[0]?.totalQty || 0;
-
-    return {
-        totalBookings,
-        registeredTickets,
-        pendingRegistrations,
-        scannedEntries,
-    };
-};
-
 // Get Active Event
-// An event is only considered "active" while isActive === true AND its
-// endDateTime has not yet passed. isActive stays a manually controlled
-// flag (never written here or auto-flipped) — endDateTime is what makes
-// this check time-accurate on every single request, without a cron job,
-// scheduler, or any DB write.
+// An event is "currently running" while isActive === true AND its
+// endDateTime has not yet passed — that part is unchanged. But an event
+// expiring must never hide its own historical data (Step 5): if nothing
+// is currently running, this now falls back to the most recently expired
+// (but not yet deleted) event instead of returning null, so the
+// Dashboard keeps showing that event's booking/pass counts until an
+// Admin explicitly deletes it. A deleted event's document no longer
+// exists at all (hard delete, cascading to its Bookings/BookingTickets
+// in the same transaction — see event.service.js), so nothing further
+// needs excluding here once that happens. isActive stays a manually
+// controlled flag (never written here or auto-flipped by expiry).
 const getActiveEvent = async () => {
     const now = new Date();
 
-    const activeEvent = await Event.findOne({
+    const runningEvent = await Event.findOne({
         isActive: true,
         endDateTime: { $gte: now },
     })
         .sort({ startDateTime: 1 })
         .lean();
 
-    return activeEvent;
+    if (runningEvent) {
+        return runningEvent;
+    }
+
+    const lastExpiredEvent = await Event.findOne({
+        isActive: true,
+        endDateTime: { $lt: now },
+    })
+        .sort({ endDateTime: -1 })
+        .lean();
+
+    return lastExpiredEvent;
 };
 
 
@@ -278,17 +242,10 @@ const getTotalBookingDetails = async (eventId) => {
 // Dashboard Summary
  const getDashboardSummary = async () => {
 
-    // Overall, all-events counts — computed unconditionally (not inside
-    // the `!activeEvent` branch below) since these must keep reflecting
-    // every existing event, including one whose endDateTime has passed
-    // and which therefore no longer qualifies as "active".
-    const dashboardCounts = await getDashboardCounts();
-
     const activeEvent = await getActiveEvent();
 
     if (!activeEvent) {
         return {
-            ...dashboardCounts,
             activeEvent: null,
             todayBooking: 0,
             todayPassBooking: 0,
@@ -314,7 +271,6 @@ const getTotalBookingDetails = async (eventId) => {
     );
 
     return {
-        ...dashboardCounts,
         activeEvent,
         todayBooking,
         // Today's booked quantity + amount, ticket-type-wise breakdown.

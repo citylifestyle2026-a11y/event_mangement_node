@@ -58,17 +58,52 @@ const istEndOfDayUtc = (dateStr) => {
 };
 
 // ================= ACTIVE EVENT FILTER (SHARED) =================
-// Single definition of "active event" for this module: isActive === true
-// AND endDateTime not yet passed, evaluated against the current time on
-// every call (mirrors the equivalent check already used elsewhere in the
-// project, e.g. dashboardService's getActiveEvent / bookingService's
-// expiry guard). getAllEntryReports, exportEntryReport, and
-// getActiveEvents below all call this instead of each redefining the
-// condition inline, so there is exactly one place it's expressed here.
+// Used for (a) the Event dropdown (getActiveEvents) and (b) resolving an
+// explicitly-selected eventId in getAllEntryReports/exportEntryReport.
+// Step 5: an event's Entry Report data must stay accessible for as long
+// as the event itself exists — expiring it must never hide that data,
+// only an explicit manual delete may (which removes the Event document
+// itself, so it naturally stops matching here and its BookingTickets are
+// no longer reachable through it). The endDateTime/expiry condition that
+// used to be part of this filter has been removed for that reason;
+// isActive (a separate, manually-controlled admin flag, untouched by
+// expiry) is preserved exactly as before.
 const activeEventFilter = () => ({
   isActive: true,
-  endDateTime: { $gte: new Date() },
 });
+
+// ================= RESOLVE "CURRENT" EVENT (NO eventId SUPPLIED) =================
+// Legacy callers that don't pass a specific eventId still need exactly
+// one event picked for them. Prefers a currently-running (non-expired)
+// event, sorted the same way as before (earliest startDateTime first).
+// Only when no event is currently running does this fall back to the
+// most recently expired (but not yet deleted) event, so Entry Report
+// keeps showing that event's historical data instead of going empty the
+// moment the last running event expires (Step 5). A deleted event's
+// document no longer exists at all, so nothing further needs excluding.
+const resolveDefaultActiveEvent = async () => {
+  const now = new Date();
+
+  const runningEvent = await Event.findOne({
+    isActive: true,
+    endDateTime: { $gte: now },
+  })
+    .sort({ startDateTime: 1 })
+    .select("_id name title startDateTime endDateTime")
+    .lean();
+
+  if (runningEvent) {
+    return runningEvent;
+  }
+
+  return Event.findOne({
+    isActive: true,
+    endDateTime: { $lt: now },
+  })
+    .sort({ endDateTime: -1 })
+    .select("_id name title startDateTime endDateTime")
+    .lean();
+};
 
 // Restricts a query filter to only the records the authenticated user is
 // allowed to see. Admin (role "admin", set from the previous auth step)
@@ -144,10 +179,7 @@ const getAllEntryReports = async (query, currentUser) => {
       .select("_id name title startDateTime endDateTime")
       .lean();
   } else {
-    activeEvent = await Event.findOne(activeEventFilter())
-      .sort({ startDateTime: 1 })
-      .select("_id name title startDateTime endDateTime")
-      .lean();
+    activeEvent = await resolveDefaultActiveEvent();
   }
 
   if (!activeEvent) {
@@ -298,10 +330,7 @@ const exportEntryReport = async (query, res, currentUser) => {
       .select("_id name title startDateTime endDateTime")
       .lean();
   } else {
-    activeEvent = await Event.findOne(activeEventFilter())
-      .sort({ startDateTime: 1 })
-      .select("_id name title startDateTime endDateTime")
-      .lean();
+    activeEvent = await resolveDefaultActiveEvent();
   }
 
   if (!activeEvent) {

@@ -317,30 +317,33 @@ const createBooking = async (data, createdBy) => {
 // Shared by getAllBookings and exportBookings so the table and the export
 // can never diverge on which events they cover.
 //
-// - eventId supplied: scope is exactly that one event, and ONLY if it's
-//   still a real, non-deleted, non-expired event — never blindly trusted,
-//   so a stale/expired eventId can't leak bookings that should already be
-//   gone. (There's a small window, up to one scheduler tick, where an
-//   event has expired but the expiry scheduler hasn't deleted it yet;
-//   this check keeps that window's bookings from showing rather than
-//   waiting for the scheduler.)
+// - eventId supplied: scope is exactly that one event, as long as it's a
+//   real, non-deleted event — its own bookings must stay visible/
+//   exportable for as long as the Event document exists, even after it
+//   has expired (Step 5: expiring an event must never hide its existing
+//   data — only an explicit manual delete may, and a manual delete
+//   already hard-removes the Event document itself, along with its
+//   Bookings/BookingTickets in the same transaction, so there is nothing
+//   further to exclude here once that happens).
 // - eventId omitted: scope is EVERY currently active (isActive: true),
 //   non-deleted, non-expired event — not just the first one — so bookings
 //   from Event A and Event B are both included when both are active.
 //   Previously this used Event.findOne(...), which silently discarded
-//   every active event but the earliest-starting one.
+//   every active event but the earliest-starting one. This "no eventId"
+//   overview is intentionally left scoped to currently-running events
+//   only (unchanged by Step 5) — pick a specific eventId to see a given
+//   event's bookings regardless of its expiry status.
 const resolveEventScope = async (eventId) => {
-  const now = new Date();
-
   if (eventId) {
     const event = await Event.findOne({
       _id: eventId,
       isDeleted: { $ne: true },
-      endDateTime: { $gte: now },
     }).select("_id title startDateTime endDateTime");
 
     return event ? { eventIds: [event._id], events: [event] } : { eventIds: [], events: [] };
   }
+
+  const now = new Date();
 
   const activeEvents = await Event.find({
     isActive: true,
