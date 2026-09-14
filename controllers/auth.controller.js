@@ -2,6 +2,15 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const Admin = require("../models/admin.model");
 const User = require("../models/user.model");
+const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
+const { sendPasswordResetOtpEmail } = require("../utils/email.util");
+
+// 6-digit numeric OTP, generated fresh on every forgot-password request.
+// Never returned to the client anywhere — only ever emailed and, hashed,
+// stored on the account for later verification.
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
 
 // Single login endpoint shared by Admin and Checker/User — the frontend
 // only has one login form (no role selector), so both account types are
@@ -205,12 +214,33 @@ const updateProfile = async (req, res) => {
             });
         }
 
-       
-
-        // Only these 3 fields are ever touched here.
+        // Only these fields are ever touched here.
         // _id, password, role, status are never assigned from req.body.
         account.name = name;
-       
+
+        // Optional profile photo — `upload.single("profileImage")`
+        // (routes/auth.routes.js) parses it into req.file before this
+        // controller runs. Only touched when a new file was actually
+        // sent, so saving the form without picking a new photo never
+        // wipes out the existing one. Reuses the exact same
+        // local-storage upload/delete utilities as every other image
+        // flow in the app (Event, User, attendee photos) — no second
+        // storage system, and localUpload.util.js already converts
+        // JPG/PNG to WEBP the same way it does for every other upload.
+        if (req.file) {
+            if (account.profileImagePublicId) {
+                await deleteImage(account.profileImagePublicId);
+            }
+
+            const folder = isAdmin
+                ? "event-management/admins"
+                : "event-management/users";
+
+            const uploadedImage = await uploadImage(req.file, folder);
+
+            account.profileImage = uploadedImage.url;
+            account.profileImagePublicId = uploadedImage.public_id;
+        }
 
         await account.save();
 
@@ -305,6 +335,194 @@ const resetPassword = async (req, res) => {
 };
 
 
+// ================= FORGOT PASSWORD: STEP 1 — SEND OTP =================
+// Public route (no `protect`) — the whole point is the user isn't logged
+// in. Looks across BOTH Admin and User/Checker (same shared-collection
+// pattern as login/getProfile/updateProfile above), since both sign in
+// through the same Login page. Always returns the same generic success
+// message whether or not an account exists for that email, so this
+// endpoint can't be used to enumerate registered accounts — a real OTP
+// is only generated/emailed when an account IS found.
+const forgotPassword = async (req, res) => {
+    try {
+        const email = req.body.email.trim().toLowerCase();
+
+        const genericSuccess = () => res.status(200).json({
+            success:true,
+            message:"If an account exists with this email, a password reset OTP has been sent.",
+        });
+
+        const admin = await Admin.findOne({ email });
+        const account = admin || await User.findOne({ email });
+
+        if (!account) {
+            return genericSuccess();
+        }
+
+        const otp = generateOtp();
+        const otpHash = await bcrypt.hash(otp, 10);
+
+        account.resetPasswordOtp = otpHash;
+        account.resetPasswordOtpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+        await account.save();
+
+        try {
+            await sendPasswordResetOtpEmail(account.email, account.name, otp);
+        } catch (emailError) {
+            // Log the real SMTP/nodemailer error so it's actually visible
+            // in server logs — the response below is intentionally generic
+            // for the client, but we must not lose the real reason server-side.
+            console.error("Password reset email failed:", {
+                message: emailError.message,
+                code: emailError.code,
+                response: emailError.response,
+                command: emailError.command,
+            });
+
+            // The email never went out — roll back the OTP so it can't
+            // be "verified" via some other channel, and tell the caller
+            // this specific attempt failed (this is the one case where
+            // the response intentionally differs from the generic
+            // message above, since it reflects a server/delivery
+            // problem rather than which emails are registered).
+            account.resetPasswordOtp = undefined;
+            account.resetPasswordOtpExpiresAt = undefined;
+            await account.save();
+
+            return res.status(500).json({
+                success:false,
+                message:"Failed to send the reset email. Please try again in a few minutes.",
+            });
+        }
+
+        return genericSuccess();
+
+    } catch(error) {
+        return res.status(500).json({
+            success:false,
+            message:error.message,
+        });
+    }
+};
+
+
+// ================= FORGOT PASSWORD: STEP 2 — VERIFY OTP =================
+// Lets the frontend confirm the OTP is correct BEFORE showing the
+// new-password screen (better UX than only finding out at the final
+// submit). This does not consume/clear the OTP or change anything —
+// resetPasswordWithOtp below independently re-verifies it from scratch
+// before actually changing the password, so this step is purely
+// informational and can't be used to "pre-approve" a later request.
+const verifyResetOtp = async (req, res) => {
+    try {
+        const email = req.body.email.trim().toLowerCase();
+        const { otp } = req.body;
+
+        const invalid = () => res.status(400).json({
+            success:false,
+            message:"Invalid or expired OTP.",
+        });
+
+        const admin = await Admin.findOne({ email })
+            .select("+resetPasswordOtp +resetPasswordOtpExpiresAt");
+        const account = admin || await User.findOne({ email })
+            .select("+resetPasswordOtp +resetPasswordOtpExpiresAt");
+
+        if (!account || !account.resetPasswordOtp || !account.resetPasswordOtpExpiresAt) {
+            return invalid();
+        }
+
+        if (account.resetPasswordOtpExpiresAt.getTime() < Date.now()) {
+            return invalid();
+        }
+
+        const isMatch = await bcrypt.compare(otp, account.resetPasswordOtp);
+
+        if (!isMatch) {
+            return invalid();
+        }
+
+        return res.status(200).json({
+            success:true,
+            message:"OTP verified. You can now set a new password.",
+        });
+
+    } catch(error) {
+        return res.status(500).json({
+            success:false,
+            message:error.message,
+        });
+    }
+};
+
+
+// ================= FORGOT PASSWORD: STEP 3 — SET NEW PASSWORD =================
+// Re-verifies the OTP+expiry+match from scratch (never trusts that
+// verifyResetOtp was called earlier in the same session) before actually
+// changing the password — the same "never trust client-asserted state"
+// principle already used elsewhere in this file. On success the OTP is
+// cleared so it can't be reused.
+const resetPasswordWithOtp = async (req, res) => {
+    try {
+        const email = req.body.email.trim().toLowerCase();
+        const { otp, newPassword, confirmPassword } = req.body;
+
+        // newPassword === confirmPassword is already enforced by
+        // resetPasswordWithOtpValidation, this is just a defensive re-check
+        // (same pattern as the authenticated resetPassword above).
+        if (newPassword !== confirmPassword) {
+            return res.status(400).json({
+                success:false,
+                message:"New password and confirm password do not match",
+            });
+        }
+
+        const invalid = () => res.status(400).json({
+            success:false,
+            message:"Invalid or expired OTP.",
+        });
+
+        const admin = await Admin.findOne({ email })
+            .select("+resetPasswordOtp +resetPasswordOtpExpiresAt");
+        const account = admin || await User.findOne({ email })
+            .select("+resetPasswordOtp +resetPasswordOtpExpiresAt");
+
+        if (!account || !account.resetPasswordOtp || !account.resetPasswordOtpExpiresAt) {
+            return invalid();
+        }
+
+        if (account.resetPasswordOtpExpiresAt.getTime() < Date.now()) {
+            return invalid();
+        }
+
+        const isMatch = await bcrypt.compare(otp, account.resetPasswordOtp);
+
+        if (!isMatch) {
+            return invalid();
+        }
+
+        // Do NOT hash here — both the Admin and User schemas' pre("save")
+        // middleware already hash password on save (same note as the
+        // authenticated resetPassword above).
+        account.password = newPassword;
+        account.resetPasswordOtp = undefined;
+        account.resetPasswordOtpExpiresAt = undefined;
+        await account.save();
+
+        return res.status(200).json({
+            success:true,
+            message:"Password reset successfully. You can now log in with your new password.",
+        });
+
+    } catch(error) {
+        return res.status(500).json({
+            success:false,
+            message:error.message,
+        });
+    }
+};
+
+
 const logout = async (req, res) => {
     try {
         // Stateless JWT: there is no server-side session/token record to
@@ -330,5 +548,8 @@ module.exports = {
     getProfile,
     updateProfile,
     resetPassword,
+    forgotPassword,
+    verifyResetOtp,
+    resetPasswordWithOtp,
     logout,
 };

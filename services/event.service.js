@@ -3,7 +3,7 @@ const Event = require("../models/event.model");
 const TicketType = require("../models/ticketType.model");
 const Booking = require("../models/booking.model");
 const BookingTicket = require("../models/bookingTicket.model");
-const uploadToCloudinary = require("../utils/cloudinary.util");
+const uploadImage = require("../utils/localUpload.util");
 const generateEventCode = require("../utils/generateEventCode");
 
 // ================= EVENT EXPIRY STATUS SYNC (NO CRON) =================
@@ -45,8 +45,8 @@ exports.createEvent = async (data, file, adminId) => {
   let imagePublicId = "";
 
   if (file) {
-    const uploadedImage = await uploadToCloudinary(
-      file.buffer,
+    const uploadedImage = await uploadImage(
+      file,
       "event-management/events"
     );
 
@@ -205,8 +205,8 @@ exports.updateEvent = async (id, data, file) => {
   let imagePublicId = event.imagePublicId;
 
   if (file) {
-    const uploadedImage = await uploadToCloudinary(
-      file.buffer,
+    const uploadedImage = await uploadImage(
+      file,
       "event-management/events"
     );
 

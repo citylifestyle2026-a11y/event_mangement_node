@@ -6,7 +6,7 @@ const BookingTicket = require("../models/bookingTicket.model");
 const generateTicketNumber = require("../utils/generateTicketNumber");
 const generateQrToken = require("../utils/generateQrToken");
 const generateQrCode = require("../utils/generateQrCode");
-const uploadToCloudinary = require("../utils/cloudinary.util");
+const uploadImage = require("../utils/localUpload.util");
 const AppError = require("../utils/AppError");
 const eventService = require("./event.service");
 const whatsappService = require("./whatsapp.service");
@@ -242,10 +242,12 @@ const createBooking = async (data, createdBy) => {
       // Generate QR Buffer
       const qrBuffer = await generateQrCode(qrToken);
 
-      // Upload QR to Cloudinary
-      const qrUpload = await uploadToCloudinary(
+      // Save QR image to local disk storage
+      const qrUpload = await uploadImage(
         qrBuffer,
-        "event-management/qr-codes"
+        "event-management/qr-codes",
+        "image",
+        { format: "png" }
       );
 
       // ================= REGISTRATION TOKEN =================
@@ -700,6 +702,41 @@ const exportBookings = async (query, res) => {
     })
     .lean();
 
+  // ================= REGISTERED ATTENDEE DETAILS (PER TICKET) =================
+  // Registration completion is tracked solely via BookingTicket.isRegistered
+  // (set true in publicRegistration.service.js once the attendee submits the
+  // public registration form). This is intentionally independent of QR/scan
+  // status (BookingTicket.status/scannedAt) — a ticket can be "Active" and
+  // never scanned yet still have a completed registration, and that
+  // registration data must still be exported. Fetched in a single batched
+  // query (rather than per-booking) to avoid N+1 lookups, then grouped by
+  // bookingId below so each booking's registered attendees can be looked up
+  // in-memory while building rows.
+  const bookingIds = bookings.map((item) => item._id);
+
+  const registeredTickets = await BookingTicket.find({
+    bookingId: { $in: bookingIds },
+    isRegistered: true,
+  })
+    .select("bookingId ticketNumber attendee")
+    .sort({ "attendee.registeredAt": 1 })
+    .lean();
+
+  const registeredTicketsByBooking = registeredTickets.reduce(
+    (acc, ticket) => {
+      const key = String(ticket.bookingId);
+
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+
+      acc[key].push(ticket);
+
+      return acc;
+    },
+    {}
+  );
+
   // ================= WORKBOOK =================
   const ExcelJS = require("exceljs");
 
@@ -711,26 +748,9 @@ const exportBookings = async (query, res) => {
   const worksheet = workbook.addWorksheet("Booking Report");
 
   worksheet.columns = [
-    {
-      header: "Booking Id",
-      key: "bookingId",
-      width: 22,
-    },
-    {
-      header: "Name",
-      key: "name",
-      width: 25,
-    },
-    {
-      header: "Mobile Number",
-      key: "mobile",
-      width: 18,
-    },
-    {
-      header: "Email",
-      key: "email",
-      width: 30,
-    },
+    // Only completed registrations are exported (see row-building loop
+    // below), identified by Event + Ticket Type, with the registered
+    // attendee's own details from BookingTicket.attendee.
     {
       header: "Event",
       key: "event",
@@ -742,39 +762,29 @@ const exportBookings = async (query, res) => {
       width: 22,
     },
     {
-      header: "Quantity",
-      key: "quantity",
-      width: 12,
-    },
-    {
-      header: "Amount",
-      key: "amount",
-      width: 15,
-    },
-    {
-      header: "Discount",
-      key: "discount",
-      width: 15,
-    },
-    {
-      header: "Created By",
-      key: "createdBy",
+      header: "Ticket Number",
+      key: "ticketNumber",
       width: 22,
     },
     {
-      header: "Remark",
-      key: "remark",
+      header: "Attendee Name",
+      key: "attendeeName",
+      width: 25,
+    },
+    {
+      header: "Attendee Mobile",
+      key: "attendeeMobile",
+      width: 18,
+    },
+    {
+      header: "Attendee Email",
+      key: "attendeeEmail",
       width: 30,
     },
     {
-      header: "Created At",
-      key: "createdAt",
+      header: "Registered At",
+      key: "registeredAt",
       width: 22,
-    },
-    {
-      header: "Status",
-      key: "status",
-      width: 15,
     },
   ];
 
@@ -801,34 +811,38 @@ const exportBookings = async (query, res) => {
 
   // ================= ROWS =================
   bookings.forEach((item) => {
-    worksheet.addRow({
-      bookingId: item.bookingNumber || "-",
-
-      name: item.name || "-",
-
-      mobile: item.mobileNumber || "-",
-
-      email: item.email || "-",
-
+    // Only Event + Ticket Type are needed to identify the row — no other
+    // booking-level fields (booker name/mobile/email, quantity, amount,
+    // discount, createdBy, remark, createdAt, status) are exported.
+    const baseRow = {
       event: item.eventId?.title || "-",
 
       ticketType: item.ticketTypeId?.ticketName || "-",
+    };
 
-      quantity: item.quantity ?? 0,
+    const registeredForBooking =
+      registeredTicketsByBooking[String(item._id)] || [];
 
-      amount: item.amount ?? 0,
+    if (registeredForBooking.length === 0) {
+      // No BookingTicket for this booking has completed registration yet —
+      // skip it entirely, since only completed registrations should appear
+      // in the export.
+      return;
+    }
 
-      discount: item.discount ?? 0,
-
-      createdBy: item.createdBy?.name || "-",
-
-      remark: item.remark || "-",
-
-      createdAt: item.createdAt
-        ? new Date(item.createdAt).toLocaleString("en-GB")
-        : "-",
-
-      status: item.isDeleted ? "Deleted" : "Success",
+    // Quantity > 1: add one row per successfully registered attendee,
+    // repeating Event + Ticket Type on each.
+    registeredForBooking.forEach((ticket) => {
+      worksheet.addRow({
+        ...baseRow,
+        ticketNumber: ticket.ticketNumber || "-",
+        attendeeName: ticket.attendee?.name || "-",
+        attendeeMobile: ticket.attendee?.mobileNumber || "-",
+        attendeeEmail: ticket.attendee?.email || "-",
+        registeredAt: ticket.attendee?.registeredAt
+          ? new Date(ticket.attendee.registeredAt).toLocaleString("en-GB")
+          : "-",
+      });
     });
   });
 

@@ -67,9 +67,14 @@ const bookingSchema = new mongoose.Schema(
       default: "Confirmed",
     },
 
+    // Tracks which Admin created this booking (req.user.id from the
+    // authenticated admin — see booking.controller.js's createBooking).
+    // Must ref "Admin", matching Event.createdBy and
+    // TicketType.createdBy, so populate("createdBy", "name") actually
+    // resolves to that admin's name instead of silently matching nothing.
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Admin",
     },
    
 

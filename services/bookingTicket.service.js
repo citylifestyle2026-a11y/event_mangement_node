@@ -1,8 +1,8 @@
 // services/bookingTicket.service.js
 
 const BookingTicket = require("../models/bookingTicket.model");
-const uploadToCloudinary = require("../utils/cloudinary.util");
-const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
+const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
 const AppError = require("../utils/AppError");
 const whatsappService = require("./whatsapp.service");
 const pdfService = require("./pdf.service");
@@ -29,13 +29,13 @@ const registerUser = async (ticketId, data, file, userId) => {
 
     // Delete old image
     if (ticket.attendee.profileImagePublicId) {
-      await deleteFromCloudinary(
+      await deleteImage(
         ticket.attendee.profileImagePublicId
       );
     }
 
-    const upload = await uploadToCloudinary(
-      file.buffer,
+    const upload = await uploadImage(
+      file,
       "event-management/register-user"
     );
 
@@ -86,9 +86,17 @@ const registerUser = async (ticketId, data, file, userId) => {
 // controller so the caller gets a real error response instead of a
 // false "success".
 const resendTicket = async (ticketId) => {
+  // "title" only used to be selected here, which is fine for the
+  // WhatsApp resend text but silently dropped event.image/venueName/
+  // address whenever this function's fallback below had to regenerate a
+  // ticket PDF (services/pdf.service.js needs all four fields to render
+  // that event's own image/venue box). Expanded to select every field
+  // pdf.service.js actually reads, so a regenerated PDF always uses
+  // this event's current data — same fallback behavior, just no longer
+  // missing fields.
   const ticket = await BookingTicket.findById(ticketId)
     .populate("bookingId")
-    .populate("eventId", "title")
+    .populate("eventId", "title image venueName address")
     .populate("ticketTypeId", "ticketName");
 
   if (!ticket) {

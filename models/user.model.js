@@ -91,6 +91,21 @@ const userSchema = new Schema(
       ref: 'Admin', // reference to the Admin model used for JWT authentication
       required: [true, 'createdBy (admin id) is required'],
     },
+
+    // ================= FORGOT PASSWORD (OTP, via email) =================
+    // Same field pair/pattern as Admin.model.js (see the matching comment
+    // there) — populated by the same shared POST /api/auth/forgot-password
+    // flow, since Checker/User accounts sign in through the same Login
+    // page and can forget their password too.
+    resetPasswordOtp: {
+      type: String,
+      select: false,
+    },
+
+    resetPasswordOtpExpiresAt: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: true, // adds createdAt and updatedAt

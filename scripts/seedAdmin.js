@@ -20,19 +20,32 @@ const run = async () => {
     });
 
     if (existing) {
-        console.log("Admin already exists. Nothing to do.");
+        // This account is the main CityLifestyle Super Admin identity by
+        // definition (matched on the seed email/mobile above). If it was
+        // created before `adminType` existed, or somehow isn't marked as
+        // "superadmin" yet, promote it now. Only `adminType` is touched —
+        // name/email/mobile/password/role/status are left exactly as-is.
+        if (existing.adminType !== "superadmin") {
+            existing.adminType = "superadmin";
+            await existing.save();
+            console.log("Existing Admin found and marked as superadmin.");
+        } else {
+            console.log("Admin already exists. Nothing to do.");
+        }
     } else {
         await Admin.create({
             name: ADMIN_NAME,
             email: ADMIN_EMAIL.toLowerCase(),
             mobile: ADMIN_MOBILE,
-            password: ADMIN_PASSWORD
+            password: ADMIN_PASSWORD,
+            adminType: "superadmin"
         });
 
         console.log("Admin created successfully!");
         console.log(`Name: ${ADMIN_NAME}`);
         console.log(`Email: ${ADMIN_EMAIL}`);
         console.log(`Mobile: ${ADMIN_MOBILE}`);
+        console.log("Admin Type: superadmin");
     }
 
     await mongoose.connection.close();

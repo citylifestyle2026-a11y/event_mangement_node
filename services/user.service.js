@@ -1,7 +1,7 @@
 const User = require("../models/user.model");
 const AppError = require("../utils/AppError");
-const uploadToCloudinary = require("../utils/cloudinary.util");
-const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
+const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
 // create user
 const createUser = async (admin, data, file) => {
   if (!admin || admin.role !== "admin") {
@@ -49,13 +49,13 @@ const createUser = async (admin, data, file) => {
   let profileImagePublicId = "";
 
   if (file) {
-    const uploadedImage = await uploadToCloudinary(
-      file.buffer,
+    const uploadedImage = await uploadImage(
+      file,
       "event-management/users"
     );
 
     // TEMP DEBUG — remove after confirming upload works
-    console.log("[DEBUG] createUser Cloudinary result:", uploadedImage);
+    console.log("[DEBUG] createUser local upload result:", uploadedImage);
 
     profileImage = uploadedImage.url;
     profileImagePublicId = uploadedImage.public_id;
@@ -105,6 +105,7 @@ const getUsers = async (query) => {
 
   const users = await User.find(filter)
     .select("-password")
+    .populate("createdBy", "name")
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit);
@@ -166,16 +167,16 @@ const updateUser = async (id, data, file) => {
 
   if (file) {
     if (profileImagePublicId) {
-      await deleteFromCloudinary(profileImagePublicId);
+      await deleteImage(profileImagePublicId);
     }
 
-    const uploadedImage = await uploadToCloudinary(
-      file.buffer,
+    const uploadedImage = await uploadImage(
+      file,
       "event-management/users"
     );
 
     // TEMP DEBUG — remove after confirming upload works
-    console.log("[DEBUG] updateUser Cloudinary result:", uploadedImage);
+    console.log("[DEBUG] updateUser local upload result:", uploadedImage);
 
     profileImage = uploadedImage.url;
     profileImagePublicId = uploadedImage.public_id;
@@ -217,7 +218,7 @@ const deleteUser = async (id) => {
     throw new AppError("User not found", 404);
   }
   if (user.profileImagePublicId) {
-    await deleteFromCloudinary(user.profileImagePublicId);
+    await deleteImage(user.profileImagePublicId);
   }
 
   await User.findByIdAndDelete(id);

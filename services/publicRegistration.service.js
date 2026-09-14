@@ -28,8 +28,8 @@
 // of the "earliest unregistered" query for good.
 
 const BookingTicket = require("../models/bookingTicket.model");
-const uploadToCloudinary = require("../utils/cloudinary.util");
-const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
+const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
 const AppError = require("../utils/AppError");
 const verifyRegistrationToken = require("../utils/verifyRegistrationToken");
 const ticketDeliveryService = require("./ticketDelivery.service");
@@ -122,11 +122,11 @@ const registerPublicUser = async (token, data, file) => {
 
   if (file) {
     if (ticket.attendee.profileImagePublicId) {
-      await deleteFromCloudinary(ticket.attendee.profileImagePublicId);
+      await deleteImage(ticket.attendee.profileImagePublicId);
     }
 
-    const upload = await uploadToCloudinary(
-      file.buffer,
+    const upload = await uploadImage(
+      file,
       "event-management/register-user"
     );
 

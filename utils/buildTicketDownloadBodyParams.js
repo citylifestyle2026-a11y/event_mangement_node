@@ -35,10 +35,12 @@ const buildTicketDownloadBodyParams = ({ booking, event, ticket }) => [
 ];
 
 // ================= BUTTON PARAMETER (DYNAMIC URL) =================
-// Ticket PDFs are uploaded as Cloudinary "raw" resources (see
-// services/pdf.service.js), so every ticket's secure_url always shares
-// the exact same fixed prefix:
-//   https://res.cloudinary.com/<cloud_name>/raw/upload/...
+// Ticket PDFs are now saved to this server's own local disk storage
+// (see services/pdf.service.js / utils/localUpload.util.js), so every
+// ticket's URL always shares the exact same fixed prefix:
+//   https://api.citytoppers.in/uploads/ticket-pdfs/...
+// (or whatever PUBLIC_API_URL is configured to, in non-production
+// environments).
 //
 // WhatsApp's "Visit Website" Dynamic URL button only allows the SUFFIX
 // after a FIXED, template-approved base URL to change per message — the
@@ -48,15 +50,19 @@ const buildTicketDownloadBodyParams = ({ booking, event, ticket }) => [
 // frontend domain + per-ticket token suffix — see
 // buildRegistrationBodyParams.js#buildRegistrationButtonParam).
 //
-// The approved "Download Ticket" template's button must therefore be
-// configured with its base URL set to:
-//   https://res.cloudinary.com/
-// so that WhatsApp appends this returned suffix directly after it to
-// land on the exact PDF for this exact ticket. This function only ever
-// returns the already-uploaded PDF URL (with that fixed prefix
-// stripped) — never a ticket/booking id, and never any other ticket's
-// URL.
-const CLOUDINARY_RAW_BASE = "https://res.cloudinary.com/";
+// IMPORTANT — REQUIRED WHATSAPP TEMPLATE UPDATE: the approved "Download
+// Ticket" template's button base URL was previously configured (on
+// Meta/Chatbox's side) as "https://res.cloudinary.com/". It must be
+// updated to match PUBLIC_API_URL + "/uploads/" (e.g.
+// "https://api.citytoppers.in/uploads/") — this is a template
+// configuration change made outside this codebase, not something this
+// file alone can fix. Until that template is updated, the "Download
+// Ticket" WhatsApp button will keep pointing at the old Cloudinary
+// domain even though ticketPdfUrl itself is correct.
+const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || "https://api.citytoppers.in")
+  .trim()
+  .replace(/\/+$/, "");
+const LOCAL_UPLOADS_BASE = `${PUBLIC_API_URL}/uploads/`;
 
 const buildTicketDownloadButtonParam = (ticket) => {
   const pdfUrl = String(ticket?.ticketPdfUrl || "").trim();
@@ -65,8 +71,8 @@ const buildTicketDownloadButtonParam = (ticket) => {
     return "";
   }
 
-  return pdfUrl.startsWith(CLOUDINARY_RAW_BASE)
-    ? pdfUrl.slice(CLOUDINARY_RAW_BASE.length)
+  return pdfUrl.startsWith(LOCAL_UPLOADS_BASE)
+    ? pdfUrl.slice(LOCAL_UPLOADS_BASE.length)
     : pdfUrl;
 };
 

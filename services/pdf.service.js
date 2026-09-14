@@ -1,8 +1,8 @@
 // services/pdf.service.js
 //
-// Generates ONE attendee's individual ticket PDF and uploads it to the
-// project's existing Cloudinary setup (utils/cloudinary.util.js — no
-// second storage system is introduced). Used by
+// Generates ONE attendee's individual ticket PDF and saves it to local
+// disk storage (utils/localUpload.util.js — no second storage system is
+// introduced). Used by
 // services/ticketDelivery.service.js right after a BookingTicket
 // finishes registration (Public or Private) so every registered person
 // gets their OWN PDF, containing:
@@ -24,10 +24,12 @@
 // `ticket` document.
 //
 // ================= VISUAL DESIGN =================
-// Redesigned as a single-page, ticket-card layout (custom page size,
-// not A4) modeled on the client's reference ticket for LAYOUT ONLY: a
-// header with a scalloped bottom edge, a circular event-image badge
-// sitting on that scalloped boundary, decorative side borders, a
+// Single-page, ticket-card layout (custom page size, not A4) modeled on
+// the client's own live ticket-view webpage: a full-width event-image
+// section at the top — THIS event's own `event.image`, shown whole and
+// uncropped at its own aspect ratio (never a small cropped badge, since
+// the client bundles their own logo/venue/contact artwork into that one
+// picture at event-creation time) — decorative side ribbon borders, a
 // bordered "VENUE" box (event-wise — event.venueName/address, only
 // shown when the event actually has one; never a hardcoded venue),
 // bordered attendee-photo/QR boxes side by side, and a small "Powered
@@ -36,17 +38,19 @@
 // of any event's own data, so it is identical and correct across every
 // event/tenant).
 //
-// COLORS are intentionally NOT copied from that reference (it uses a
-// maroon + gold palette). Instead the whole ticket uses a navy palette
-// sampled from the City Lifestyle brand logo itself — see the
+// COLORS are sampled directly from the client's own live ticket-view
+// webpage (booking.rangesageshubhavsar.com) — maroon header/ribbons/
+// borders with a gold ribbon accent and dark-navy text — so the PDF
+// matches what attendees already see on the website itself. See the
 // BRAND_PRIMARY / BRAND_PRIMARY_DARK / BRAND_ACCENT constants below for
 // the exact values and where each is used.
 
 const fs = require("fs");
 const path = require("path");
 const PDFDocument = require("pdfkit");
-const uploadToCloudinary = require("../utils/cloudinary.util");
-const deleteFromCloudinary = require("../utils/deleteCloudinaryFile");
+const sharp = require("sharp");
+const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
 
 // ================= STATIC BRAND ASSET (LOADED ONCE) =================
 // The platform's own "City Lifestyle" brand mark, bundled with the
@@ -66,30 +70,39 @@ try {
   console.error("Ticket PDF: failed to load brand logo asset:", error.message);
 }
 
-// ================= BRAND COLOR PALETTE (FROM THE CITY LIFESTYLE LOGO) =================
-// Sampled directly from the City Lifestyle logo (a deep navy circle with
-// a subtle light-to-dark diagonal gradient and a white script wordmark —
-// no second brand hue). Every color below stays inside that same navy
-// family — no maroon/red/gold — so the ticket visually belongs to this
-// brand rather than the (maroon + gold) reference ticket it's modeled
-// on. The reference ticket's LAYOUT (scalloped header, circular event
-// badge, decorative side ribbons, venue box, photo/QR boxes, footer,
-// brand mark) is intentionally kept — only the colors changed.
-const BRAND_PRIMARY = "#154063"; // Logo's lighter navy edge (sampled ~rgb(21,64,99)). Header fill, ribbons, dividers, borders, VENUE pill, footer note.
-const BRAND_PRIMARY_DARK = "#102E52"; // Logo's deeper navy edge (sampled ~rgb(16,46,82)). Fallback event badge, ribbon shading.
-const BRAND_ACCENT = "#B6C6D0"; // Soft silvery tint of the navy (≈30% navy / 70% white) — a premium, non-gold highlight for ring accents and ribbon shading. Deliberately desaturated rather than an unrelated color like gold.
-const TEXT_DARK = "#102E52"; // Same deep navy, reused for headings (event title, venue name, attendee name/ticket number) so text reads as part of the brand rather than plain black.
-const GRAY = "#6b7280"; // Neutral secondary text (address, mobile/email/booking lines) — intentionally colorless so it never competes with the brand navy.
-const BORDER_GRAY = "#c7d1da"; // Light navy-tinted grey for the photo/QR box borders — ties even the "neutral" borders back into the palette instead of a flat generic grey.
+// ================= BRAND COLOR PALETTE (FROM THE LIVE WEBSITE'S OWN TICKET VIEW) =================
+// Replaces the earlier "City Lifestyle" navy guess. The user supplied a
+// screenshot of their actual production ticket-view page
+// (booking.rangesageshubhavsar.com/ticket/view/...) as the real
+// reference for "the existing website's visual identity" — colors below
+// are sampled directly from that screenshot (maroon header/ribbons/
+// borders + gold ribbon accent + dark-navy text), so the generated PDF
+// now matches what attendees already see on the website itself, not a
+// guessed brand. Layout (scalloped header, circular event badge,
+// decorative side ribbons, venue box, photo/QR boxes, footer, brand
+// mark) is unchanged — only these constants moved, and because every
+// usage below already keys off these named roles (MAROON / MAROON_DARK
+// / GOLD / NAVY), no other line in this file needs to change.
+const BRAND_PRIMARY = "#7F1229"; // Sampled from the website's header/ribbon/border maroon (~rgb(127,18,41)). Header fill, ribbons, dividers, borders, VENUE pill, footer note.
+const BRAND_PRIMARY_DARK = "#5C0D1E"; // Darker shade of the same maroon, for depth. Fallback event badge, ribbon shading.
+const BRAND_ACCENT = "#F3B81C"; // Sampled from the website's gold ribbon accent (~rgb(243,184,28)). Ring accents and ribbon shading highlight.
+const TEXT_DARK = "#102E52"; // Dark navy sampled from the website's own heading/name text (~rgb(7,20,55)), reused for headings (event title, venue name, attendee name/ticket number).
+const GRAY = "#6b7280"; // Neutral secondary text (address, mobile/email/booking lines) — intentionally colorless so it never competes with the brand maroon.
+const BORDER_GRAY = "#999999"; // Sampled from the website's own photo/QR box border (~rgb(153,153,153)).
 
 // ================= FETCH REMOTE IMAGE AS BUFFER =================
-// Event image / attendee photo / QR image are all already-hosted
-// Cloudinary URLs (see event.model.js#image, BookingTicket.attendee's
-// profileImage, BookingTicket.qrImage). pdfkit needs raw image bytes to
-// embed them, so each is fetched here. Deliberately never throws — a
-// missing/unreachable image (e.g. attendee skipped the optional photo
-// upload) must never stop the rest of the PDF (or the registration
-// request) from completing; that section is simply omitted below.
+// Event image / attendee photo / QR image are all already-hosted URLs
+// (Cloudinary and/or this server's own local upload storage — see
+// event.model.js#image, BookingTicket.attendee's profileImage,
+// BookingTicket.qrImage). pdfkit needs raw image bytes to embed them, so
+// each is fetched here. Deliberately never throws — a missing/
+// unreachable image (e.g. attendee skipped the optional photo upload)
+// must never stop the rest of the PDF (or the registration request)
+// from completing; that section is simply omitted below. The event
+// image is additionally passed through normalizeImageBufferForPdf()
+// after this fetch, since it (unlike this function) needs to also
+// handle WEBP/other formats pdfkit itself cannot embed — see that
+// function's comment.
 const fetchImageBuffer = async (url) => {
   const trimmedUrl = url && String(url).trim();
 
@@ -111,6 +124,59 @@ const fetchImageBuffer = async (url) => {
     return Buffer.from(arrayBuffer);
   } catch (error) {
     console.error(`Ticket PDF: image fetch error for ${trimmedUrl}:`, error.message);
+    return null;
+  }
+};
+
+// ================= NORMALIZE EVENT IMAGE FOR PDF EMBEDDING =================
+// pdfkit's doc.image()/doc.openImage() can only embed JPEG and PNG
+// bytes. Event images, however, are stored (and re-uploaded, whenever
+// an admin edits an Event) as WEBP — see utils/localUpload.util.js's
+// global "convert every uploaded JPG/PNG/WEBP image to WEBP on save"
+// rule — and a Cloudinary-hosted event image can likewise come back as
+// WEBP/AVIF/etc. depending on how it was originally uploaded there.
+// Without this step, the event-image drawing call below would throw on
+// that WEBP buffer; the existing try/catch there would swallow the
+// error and silently fall back to the "no image yet" placeholder, so
+// the event's own graphic would never actually appear in the PDF.
+//
+// This re-encodes whatever bytes were fetched (from Cloudinary or any
+// other host) into a plain PNG buffer using `sharp` — already an
+// existing dependency of this project (see utils/localUpload.util.js) —
+// so no new package is introduced. Re-encoding a format pdfkit already
+// supports (JPEG/PNG) back to PNG is a safe, lossless-for-embedding
+// no-op visually; it only guarantees pdfkit is never handed a format it
+// cannot read. Never throws: any failure (corrupt bytes, unsupported
+// encoding even for sharp, etc.) resolves to null, so the existing
+// "no event image" placeholder path below still applies exactly as
+// before — this can only make an event image that used to be dropped
+// now show up.
+//
+// Also returns the image's own natural width/height (read via the same
+// sharp call, no extra fetch) — the event-image section below needs
+// these to size itself to THIS image's own aspect ratio, so the full,
+// uncropped graphic the admin uploaded for this event (which per the
+// client may bundle its own logo/venue/contact artwork into one
+// picture) is what prints, instead of being cropped into a small
+// fixed-size circle.
+const normalizeImageBufferForPdf = async (buffer) => {
+  if (!buffer) {
+    return null;
+  }
+
+  try {
+    const pngBuffer = await sharp(buffer).png().toBuffer();
+    const metadata = await sharp(pngBuffer).metadata();
+    return {
+      buffer: pngBuffer,
+      width: metadata.width || null,
+      height: metadata.height || null,
+    };
+  } catch (error) {
+    console.error(
+      "Ticket PDF: failed to normalize event image for PDF embedding:",
+      error.message
+    );
     return null;
   }
 };
@@ -198,15 +264,15 @@ const drawContainImage = (doc, buffer, x, y, w, h) => {
   }
 };
 
-// ================= DECORATIVE SIDE BORDER (BRAND NAVY) =================
+// ================= DECORATIVE SIDE BORDER (BRAND MAROON + GOLD) =================
 const drawSideRibbon = (doc, x, ribbonWidth, pageHeight) => {
   const gradient = doc.linearGradient(x, 0, x + ribbonWidth, 0);
   gradient.stop(0, BRAND_PRIMARY_DARK).stop(0.5, BRAND_ACCENT).stop(1, BRAND_PRIMARY_DARK);
   doc.rect(x, 0, ribbonWidth, pageHeight).fill(gradient);
 
-  // White diamonds with a thin navy outline stay visible against both
-  // the dark ends AND the lighter silvery middle of the gradient above
-  // (a single non-white diamond color couldn't contrast with both).
+  // White diamonds with a thin maroon outline stay visible against both
+  // the dark maroon ends AND the gold middle of the gradient above (a
+  // single non-white diamond color couldn't contrast with both).
   const diamondSize = 6;
   for (let dy = 22; dy < pageHeight - 10; dy += 34) {
     doc.save();
@@ -224,11 +290,22 @@ const drawSideRibbon = (doc, x, ribbonWidth, pageHeight) => {
 // (or lean) documents for THIS ticket's registration. Returns a Buffer —
 // callers decide what to do with it (upload, save to disk, etc).
 const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
-  const [eventImageBuffer, userPhotoBuffer, qrImageBuffer] = await Promise.all([
+  const [eventImageRaw, userPhotoRaw, qrImageBuffer] = await Promise.all([
     fetchImageBuffer(event?.image),
     fetchImageBuffer(ticket?.attendee?.profileImage),
     fetchImageBuffer(ticket?.qrImage),
   ]);
+
+  // Both the event image AND the attendee's own registration photo go
+  // through the exact same "convert every uploaded image to WEBP" rule
+  // on upload (see utils/localUpload.util.js — routes/bookingTicket.
+  // routes.js and routes/publicRegistration.routes.js both save
+  // attendee.profileImage through it), so the attendee photo needs the
+  // exact same pdfkit-safe re-encode as the event image, for the exact
+  // same reason. See normalizeImageBufferForPdf's comment.
+  const eventImageBuffer = await normalizeImageBufferForPdf(eventImageRaw);
+  const userPhoto = await normalizeImageBufferForPdf(userPhotoRaw);
+  const userPhotoBuffer = userPhoto ? userPhoto.buffer : null;
 
   return new Promise((resolve, reject) => {
     try {
@@ -260,43 +337,68 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
       drawSideRibbon(doc, 0, RIBBON_W, PAGE_HEIGHT);
       drawSideRibbon(doc, PAGE_WIDTH - RIBBON_W, RIBBON_W, PAGE_HEIGHT);
 
-      // ================= HEADER + SCALLOPED EDGE (BRAND NAVY) =================
-      const HEADER_HEIGHT = 190;
-      doc.rect(RIBBON_W, 0, PAGE_WIDTH - RIBBON_W * 2, HEADER_HEIGHT).fill(MAROON);
+      // ================= EVENT IMAGE (FULL, UNCROPPED, EVENT-WISE) =================
+      // Per the client: the whole graphic — their event's own logo/
+      // emblem plus venue callout plus contact links, all pre-designed
+      // together into ONE picture — is uploaded as `event.image` at
+      // event-creation time, and that exact picture must appear on the
+      // ticket, since none of it is a fixed/hardcoded platform asset.
+      // A small fixed-size circular crop (the previous approach) would
+      // cut away most of that picture, so instead the full image is
+      // shown edge-to-edge across the top of the ticket at ITS OWN
+      // aspect ratio — the box below is sized FROM the image's real
+      // width/height (see normalizeImageBufferForPdf), so "contain"
+      // fits it with no cropping and no letterboxing. Clamped between a
+      // min/max so an unusually tall or wide upload can never break this
+      // fixed-size ticket-card page's layout.
+      const EVENT_IMAGE_MIN_HEIGHT = 150;
+      const EVENT_IMAGE_MAX_HEIGHT = 340;
+      const EVENT_IMAGE_FALLBACK_HEIGHT = 190; // Used only when this event has no image yet.
+      const eventImageAreaWidth = PAGE_WIDTH - RIBBON_W * 2;
 
-      const scallopR = 9;
-      for (
-        let sx = RIBBON_W + scallopR;
-        sx <= PAGE_WIDTH - RIBBON_W - scallopR + 0.01;
-        sx += scallopR * 2
-      ) {
-        doc.circle(sx, HEADER_HEIGHT, scallopR).fill("#ffffff");
+      let HEADER_HEIGHT = EVENT_IMAGE_FALLBACK_HEIGHT;
+      if (eventImageBuffer && eventImageBuffer.width && eventImageBuffer.height) {
+        const naturalHeight =
+          eventImageAreaWidth * (eventImageBuffer.height / eventImageBuffer.width);
+        HEADER_HEIGHT = Math.min(
+          EVENT_IMAGE_MAX_HEIGHT,
+          Math.max(EVENT_IMAGE_MIN_HEIGHT, naturalHeight)
+        );
       }
 
-      // ================= EVENT-WISE CIRCULAR BADGE =================
-      // Always THIS event's own image — never a hardcoded banner, so
-      // every event gets its own badge here.
-      const badgeCx = PAGE_WIDTH / 2;
-      const badgeCy = HEADER_HEIGHT;
-      const badgeR = 58;
+      // Brand-color backdrop: fully covered by the image above when one
+      // exists (box aspect ratio matches the image's own, so there's no
+      // gap to show through); doubles as the "no image yet" placeholder
+      // background otherwise.
+      doc.rect(RIBBON_W, 0, eventImageAreaWidth, HEADER_HEIGHT).fill(MAROON);
 
       if (eventImageBuffer) {
-        drawCoverImageCircle(doc, eventImageBuffer, badgeCx, badgeCy, badgeR);
+        drawContainImage(
+          doc,
+          eventImageBuffer.buffer,
+          RIBBON_W,
+          0,
+          eventImageAreaWidth,
+          HEADER_HEIGHT
+        );
       } else {
-        doc.circle(badgeCx, badgeCy, badgeR).fill(MAROON_DARK);
         doc
           .fillColor("#ffffff")
           .font("Helvetica-Bold")
-          .fontSize(11)
-          .text(truncateText(event?.title, 22), badgeCx - badgeR + 8, badgeCy - 10, {
-            width: (badgeR - 8) * 2,
+          .fontSize(16)
+          .text(safeText(event?.title, "Event"), RIBBON_W + 20, HEADER_HEIGHT / 2 - 10, {
+            width: eventImageAreaWidth - 40,
             align: "center",
           });
       }
-      doc.circle(badgeCx, badgeCy, badgeR).lineWidth(3).stroke("#ffffff");
-      doc.circle(badgeCx, badgeCy, badgeR + 3).lineWidth(2).stroke(GOLD);
 
-      let cursorY = badgeCy + badgeR + 18;
+      // Thin gold accent line closing off the event-image section,
+      // echoing the ribbon's gold accent instead of the old scalloped
+      // cutout (which was designed around the small circular badge this
+      // section replaces).
+      doc.rect(RIBBON_W, HEADER_HEIGHT - 3, eventImageAreaWidth, 3).fill(GOLD);
+
+      let cursorY = HEADER_HEIGHT + 18;
 
       // ================= VENUE BOX (EVENT-WISE, OPTIONAL) =================
       // Only rendered when THIS event actually has a venue name set
@@ -540,9 +642,9 @@ const buildTicketPdfBuffer = async ({ event, ticketType, booking, ticket }) => {
 };
 
 // ================= GENERATE + UPLOAD ONE TICKET'S PDF =================
-// Builds THIS ticket's PDF, uploads it to Cloudinary, and removes the
-// previous PDF file for this exact ticket (if any) so re-registrations
-// never leave orphaned Cloudinary files behind. Does not mutate/save
+// Builds THIS ticket's PDF, saves it to local disk storage, and removes
+// the previous PDF file for this exact ticket (if any) so
+// re-registrations never leave orphaned files behind. Does not mutate/save
 // the `ticket` document — callers (services/ticketDelivery.service.js)
 // are responsible for persisting the returned url/public_id.
 const generateAndUploadTicketPdf = async ({ event, ticketType, booking, ticket }) => {
@@ -558,31 +660,17 @@ const generateAndUploadTicketPdf = async ({ event, ticketType, booking, ticket }
   );
   const publicId = `${safeTicketNumber}-${Date.now()}`;
 
-  // ================= resource_type: "image" (NOT "raw") =================
-  // Cloudinary blocks public delivery of "raw" PDF/ZIP files by default
-  // on most accounts (a documented security restriction) unless the
-  // account owner explicitly enables "Allow delivery of PDF and ZIP
-  // files" in the Cloudinary console — without that, opening the
-  // returned URL fails with an authorization error, which is exactly
-  // what breaks "Download Ticket". Uploading the PDF as an "image"
-  // resource instead (Cloudinary's documented, recommended way to host
-  // PDFs) is not subject to that restriction, so the same URL always
-  // opens/downloads correctly with no dashboard changes required.
+  // Saved to local disk under uploads/ticket-pdfs/<publicId>.pdf and
+  // served publicly via express.static (see app.js). `format: "pdf"`
+  // is what makes the saved file end in ".pdf".
   //
-  // For "image" resources, Cloudinary appends the delivered extension
-  // from `format` itself — unlike "raw", where the extension has to be
-  // embedded directly in public_id (see the old public_id construction
-  // this replaced) — so public_id here intentionally has NO ".pdf"
-  // suffix; `format: "pdf"` is what makes the delivered secure_url end
-  // in ".pdf".
-  //
-  // This does NOT change the WhatsApp "Download Ticket" button flow:
-  // buildTicketDownloadBodyParams.js only strips the fixed
-  // "https://res.cloudinary.com/" domain prefix and forwards everything
-  // after it — it never depends on "raw" vs "image" appearing in the
-  // path, so the existing button/template wiring keeps working exactly
-  // as before with no changes there.
-  const upload = await uploadToCloudinary(
+  // This does NOT change the WhatsApp "Download Ticket" button flow's
+  // shape: buildTicketDownloadBodyParams.js still strips a fixed base
+  // URL prefix and forwards everything after it — only that prefix now
+  // points at this server's own domain (PUBLIC_API_URL) instead of
+  // Cloudinary's. See that file's comments for the required WhatsApp
+  // template update this implies.
+  const upload = await uploadImage(
     buffer,
     "event-management/ticket-pdfs",
     "image",
@@ -594,11 +682,7 @@ const generateAndUploadTicketPdf = async ({ event, ticketType, booking, ticket }
 
   if (ticket?.ticketPdfPublicId) {
     try {
-      // Matches the "image" resource_type used above — deleting a
-      // previously-uploaded ticket PDF must use the SAME resource_type
-      // it was uploaded under, or Cloudinary's destroy call silently
-      // targets the wrong resource and never actually removes the file.
-      await deleteFromCloudinary(ticket.ticketPdfPublicId, "image");
+      await deleteImage(ticket.ticketPdfPublicId);
     } catch (error) {
       console.error(
         `Ticket PDF: failed to delete previous PDF (${ticket.ticketPdfPublicId}):`,

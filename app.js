@@ -5,6 +5,7 @@ const path = require("path");
 const healthRoutes = require("./routes/health.routes");
 const authRoutes = require("./routes/auth.routes");
 const userRoutes = require("./routes/user.routes");
+const adminRoutes = require("./routes/admin.routes");
 const eventRoutes = require('./routes/event.routes');
 const ticketTypeRoutes = require("./routes/ticketType.routes");
 const bookingRoutes = require("./routes/booking.routes");
@@ -30,6 +31,11 @@ app.use("/api/health", healthRoutes);
 app.use("/api/auth", authRoutes);
 //users
 app.use("/api/users", userRoutes);
+// admin management (was previously missing here — routes/admin.routes.js
+// already implements GET/POST/PUT for Admin Management and Edit
+// Profile-by-Super-Admin, it just was never mounted, hence every
+// /api/admin/... request falling through to the 404 handler below)
+app.use("/api/admin", adminRoutes);
 // events
 app.use("/api/events", eventRoutes);
 // ticket 
