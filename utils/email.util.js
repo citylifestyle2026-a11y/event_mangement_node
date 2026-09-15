@@ -5,11 +5,19 @@ const nodemailer = require("nodemailer");
 // already used by config/uploadPaths.js's PUBLIC_API_URL — so this works
 // the same way across local/staging/production without a code change.
 // These MUST be set in .env for outgoing email to actually work:
-//   SMTP_HOST      e.g. smtp.gmail.com / smtp.sendgrid.net
-//   SMTP_PORT      e.g. 587 (STARTTLS) or 465 (implicit TLS)
+//   SMTP_HOST      the citytoppers.in domain's OWN mail server (NOT
+//                  Gmail — sending via smtp.gmail.com as info@citytoppers.in
+//                  fails SPF/DKIM alignment against this domain's DMARC
+//                  policy, which is why OTP emails were landing in Spam).
+//                  Exact hostname must come from the hosting provider —
+//                  see the deliverability inspection notes for what to
+//                  confirm before setting this.
+//   SMTP_PORT      typically 587 (STARTTLS) or 465 (implicit TLS) — confirm
+//                  with the hosting provider, do not assume.
 //   SMTP_SECURE    "true" for port 465, "false" (default) for 587/STARTTLS
-//   SMTP_USER      SMTP account username
-//   SMTP_PASS      SMTP account password / app password / API key
+//   SMTP_USER      the info@citytoppers.in mailbox's own login (this is
+//                  the mail server account, NOT a Gmail App Password)
+//   SMTP_PASS      that mailbox's own password
 //   SMTP_FROM      optional — the From address shown to recipients;
 //                  falls back to SMTP_USER if not set
 //
@@ -47,8 +55,16 @@ const sendPasswordResetOtpEmail = async (to, name, otp) => {
   const greetingName = name ? name : "there";
 
   await getTransporter().sendMail({
-    from: fromAddress,
+    // Display name added ("City Toppers" <info@citytoppers.in>) instead
+    // of a bare address — purely cosmetic/trust-related, not part of the
+    // SPF/DKIM/DMARC fix itself.
+    from: `"City Toppers" <${fromAddress}>`,
     to,
+    // Reply-To set to the same mailbox so a reply from the recipient
+    // reaches a real, monitored inbox rather than whatever SMTP_FROM
+    // happens to be (currently the same address, but this keeps replies
+    // correct even if SMTP_FROM is ever pointed at a no-reply address).
+    replyTo: fromAddress,
     subject: "Your password reset code",
     text:
       `Hi ${greetingName},\n\n` +

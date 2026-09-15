@@ -15,10 +15,24 @@ const entryReportRoutes = require("./routes/entryReport.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
 const roleRoutes = require("./routes/role.routes");
 const publicRegistrationRoutes = require("./routes/publicRegistration.routes");
+const contactRoutes = require("./routes/contact.routes");
+const companyCategoryRoutes = require("./routes/companycategory.routes");
 const app = express();
 
 // ---------- Core Middlewares ----------
-app.use(cors());
+const corsOptions = {
+  origin: [
+    "https://citytoppers.in",
+    "https://www.citytoppers.in",
+    "http://localhost:5173",
+  ],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -56,6 +70,13 @@ app.use("/api/roles", roleRoutes);
 app.use("/api/bookings", bookingRoutes);
 // publick register router
 app.use("/api/public/registration", publicRegistrationRoutes);
+// contacts (was previously missing here — routes/contact.routes.js
+// already implements Reference Summary plus create/list/get/update/
+// delete, it just was never mounted, hence every /api/contacts/...
+// request falling through to the 404 handler below)
+app.use("/api/contacts", contactRoutes);
+// company categories (same as above — was implemented but never mounted)
+app.use("/api/company-categories", companyCategoryRoutes);
 // image 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 

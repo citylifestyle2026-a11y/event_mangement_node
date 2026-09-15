@@ -9,6 +9,26 @@ const pdfService = require("./pdf.service");
 const buildTicketDownloadBodyParams = require("../utils/buildTicketDownloadBodyParams");
 const ticketDeliveryService = require("./ticketDelivery.service");
 
+// ================= GET REGISTER USER (FOR EDIT PRE-FILL) =================
+// Backend counterpart of the frontend's getRegisterUserApi
+// (GET /api/booking-ticket/register-user/:ticketId), used by
+// BookingUserModal.jsx to pre-fill the edit form with this ticket's
+// current attendee details before the user submits changes via the
+// existing PUT /register-user/:ticketId (registerUser, below). This was
+// previously missing entirely (no route/controller/service), so that
+// GET request always failed. Read-only — does not touch isRegistered,
+// registeredAt, or any other field; identical "ticket not found"
+// handling as registerUser/resendTicket below for consistency.
+const getRegisterUser = async (ticketId) => {
+  const ticket = await BookingTicket.findById(ticketId);
+
+  if (!ticket) {
+    throw new AppError("Ticket not found", 404);
+  }
+
+  return ticket;
+};
+
 // ================= REGISTER / UPDATE USER =================
 
 const registerUser = async (ticketId, data, file, userId) => {
@@ -171,6 +191,7 @@ const resendTicket = async (ticketId) => {
 };
 
 module.exports = {
+  getRegisterUser,
   registerUser,
   resendTicket,
 };
