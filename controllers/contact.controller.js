@@ -39,6 +39,37 @@ const getAllContacts = async (req, res, next) => {
   }
 };
 
+// ================= EXPORT CONTACTS =================
+// GET /api/contacts/export — same search/sortBy/sortOrder/
+// companyCategory/reference query params as getAllContacts (see
+// contactService.exportContacts), so the exported file always matches
+// whatever the Contact List page is currently searching/filtering/
+// sorting by. The service streams the .xlsx directly onto `res`.
+const exportContacts = async (req, res, next) => {
+  try {
+    await contactService.exportContacts(req.query, res);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ================= GET UNIQUE REFERENCES =================
+// GET /api/contacts/unique-references?search= — feeds the Contact List's
+// "All References" filter dropdown.
+const getUniqueReferences = async (req, res, next) => {
+  try {
+    const result = await contactService.getUniqueReferences(req.query);
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ================= GET REFERENCE SUMMARY =================
 // GET /api/contacts/reference-summary — no query params; returns every
 // unique reference across all active contacts grouped with the list of
@@ -111,6 +142,8 @@ const deleteContact = async (req, res, next) => {
 module.exports = {
   createContact,
   getAllContacts,
+  exportContacts,
+  getUniqueReferences,
   getReferenceSummary,
   getContactById,
   updateContact,

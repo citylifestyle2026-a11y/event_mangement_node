@@ -51,6 +51,7 @@ const PDFDocument = require("pdfkit");
 const sharp = require("sharp");
 const uploadImage = require("../utils/localUpload.util");
 const deleteImage = require("../utils/deleteLocalFile");
+const { UPLOAD_ROOT } = require("../config/uploadPaths");
 
 // ================= STATIC BRAND ASSET (LOADED ONCE) =================
 // The platform's own "City Lifestyle" brand mark, bundled with the
@@ -103,6 +104,49 @@ const BORDER_GRAY = "#999999"; // Sampled from the website's own photo/QR box bo
 // after this fetch, since it (unlike this function) needs to also
 // handle WEBP/other formats pdfkit itself cannot embed — see that
 // function's comment.
+// ROOT-CAUSE FIX: event image / QR / attendee photo are saved to this
+// same server's own local disk by utils/localUpload.util.js, which
+// returns a URL of the form `${PUBLIC_BASE_URL}/uploads/<relativePath>`
+// (see config/uploadPaths.js). Previously this function always went
+// back out over HTTP(S) to fetch that same URL — i.e. the server
+// calling itself over the public internet to read a file it had just
+// written to its own disk. In production (Plesk) that self-request can
+// 404 (reverse-proxy/static-mapping not routing it back to this Node
+// process, DNS, outbound firewalling, etc.) even though the file is
+// sitting right there on disk, which is exactly the bug being fixed
+// here. Any URL that points at this server's own /uploads/ path is now
+// read directly from local disk; only a genuinely external URL (e.g. a
+// legacy Cloudinary URL from before the migration to local storage)
+// still goes through the original HTTP fetch fallback.
+const resolveLocalUploadPath = (trimmedUrl) => {
+  let pathname;
+
+  try {
+    pathname = new URL(trimmedUrl).pathname;
+  } catch (error) {
+    // Not an absolute URL (e.g. already a bare "/uploads/..." path) —
+    // treat the string itself as the pathname.
+    pathname = trimmedUrl;
+  }
+
+  const marker = "/uploads/";
+  const markerIndex = pathname.indexOf(marker);
+  if (markerIndex === -1) {
+    return null;
+  }
+
+  const relativePath = pathname.slice(markerIndex + marker.length);
+  const absolutePath = path.join(UPLOAD_ROOT, relativePath);
+
+  // Refuse to resolve outside UPLOAD_ROOT (defensive, mirrors
+  // utils/deleteLocalFile.js's own safety check).
+  if (!absolutePath.startsWith(UPLOAD_ROOT)) {
+    return null;
+  }
+
+  return absolutePath;
+};
+
 const fetchImageBuffer = async (url) => {
   const trimmedUrl = url && String(url).trim();
 
@@ -110,6 +154,31 @@ const fetchImageBuffer = async (url) => {
     return null;
   }
 
+  // Prefer reading directly from local disk when this URL is this
+  // server's own /uploads/ file — no network round-trip, and immune to
+  // any reverse-proxy/static-routing issue affecting self-requests.
+  const localPath = resolveLocalUploadPath(trimmedUrl);
+  if (localPath) {
+    try {
+      if (fs.existsSync(localPath)) {
+        return await fs.promises.readFile(localPath);
+      }
+      console.error(
+        `Ticket PDF: local upload file not found on disk for ${trimmedUrl} (expected at ${localPath})`
+      );
+      return null;
+    } catch (error) {
+      console.error(
+        `Ticket PDF: local upload read error for ${trimmedUrl}:`,
+        error.message
+      );
+      return null;
+    }
+  }
+
+  // Fallback: genuinely external URL (e.g. a legacy Cloudinary image
+  // saved before the migration to local storage) — fetch over HTTP as
+  // before.
   try {
     const response = await fetch(trimmedUrl);
 

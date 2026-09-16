@@ -25,6 +25,14 @@ const SORTABLE_FIELDS = [
 // `adminId` always comes from the authenticated admin (req.user.id in
 // the controller), never from req.body — same convention already used
 // by eventService.createEvent/ticketTypeService.createTicketType.
+//
+// DUPLICATE HANDLING: if an existing, non-deleted contact already has
+// the SAME Full Name + WhatsApp/Mobile Number (name compared
+// case-insensitively, via the same collation used by getAllContacts'
+// reference filter above), this submission is treated as an update to
+// that contact — never a new document, and never rejected with
+// "WhatsApp Number already exists". See mergeIntoExistingContact below
+// for exactly what gets updated.
 const createContact = async (data, adminId) => {
   const {
     fullName,
@@ -39,7 +47,25 @@ const createContact = async (data, adminId) => {
     await assertCompanyCategoryExists(companyCategory);
   }
 
-  await assertWhatsappNumberNotDuplicate(whatsappNumber);
+  const trimmedFullName = String(fullName || "").trim();
+  const trimmedWhatsappNumber = String(whatsappNumber || "").trim();
+
+  const existingContact = await Contact.findOne({
+    isDeleted: { $ne: true },
+    whatsappNumber: trimmedWhatsappNumber,
+    fullName: trimmedFullName,
+  }).collation(CASE_INSENSITIVE_COLLATION);
+
+  if (existingContact) {
+    return mergeIntoExistingContact(existingContact, {
+      companyName,
+      address,
+      references,
+      companyCategory,
+    });
+  }
+
+  await assertWhatsappNumberNotDuplicate(trimmedWhatsappNumber);
 
   // References are passed through as-is here — trimming and
   // case-insensitive de-duplication happen in Contact.model.js's own
@@ -58,15 +84,63 @@ const createContact = async (data, adminId) => {
   return contact;
 };
 
-// ================= GET ALL CONTACTS =================
-// Supports: search, sorting, pagination, companyCategory filter,
-// reference filter (case-insensitive — see the reference-filter note
-// below). Response shape mirrors eventService.getAllEvents (the service
-// returns the full { success, message, data, pagination } payload, and
-// the controller just forwards it as-is).
-const getAllContacts = async (query) => {
-  const page = parseInt(query.page) || 1;
-  const limit = parseInt(query.limit) || 10;
+// ================= MERGE INTO EXISTING CONTACT (DUPLICATE SUBMIT) =================
+// Called by createContact when a submission's Full Name + WhatsApp
+// Number matches an existing, non-deleted contact.
+//  - Never creates a second document for the same person.
+//  - `companyName`/`address`/`companyCategory` are only applied if the
+//    existing contact's value is currently empty — an existing
+//    non-empty field is never overwritten by this path.
+//  - `references` are APPENDED to the existing list, never replacing
+//    it, so old references are always preserved; case-insensitive
+//    de-duplication (e.g. existing "A", new "a") is handled by
+//    Contact.model.js's pre-findOneAndUpdate hook, same as every other
+//    write path for this field.
+async function mergeIntoExistingContact(existingContact, incoming) {
+  const { companyName, address, references, companyCategory } = incoming;
+
+  const updateFields = {};
+
+  if (companyName && !existingContact.companyName) {
+    updateFields.companyName = companyName;
+  }
+
+  if (address && !existingContact.address) {
+    updateFields.address = address;
+  }
+
+  if (companyCategory && !existingContact.companyCategory) {
+    updateFields.companyCategory = companyCategory;
+  }
+
+  if (Array.isArray(references) && references.length) {
+    updateFields.references = [...existingContact.references, ...references];
+  }
+
+  if (Object.keys(updateFields).length === 0) {
+    return existingContact.populate([
+      { path: "companyCategory", select: "name" },
+      { path: "createdBy", select: "name" },
+    ]);
+  }
+
+  const updatedContact = await Contact.findOneAndUpdate(
+    { _id: existingContact._id },
+    updateFields,
+    { new: true, runValidators: true }
+  )
+    .populate("companyCategory", "name")
+    .populate("createdBy", "name");
+
+  return updatedContact;
+}
+
+// ================= SHARED FILTER/SORT BUILDER =================
+// Used by BOTH getAllContacts and exportContacts, so the exported file
+// always matches exactly what the table/search/filters/sort are
+// currently showing — never a separate, possibly-stale definition of
+// "search" or "sort" that could drift out of sync with the list API.
+function buildContactQuery(query) {
   const search = (query.search || "").trim();
 
   const sortField = SORTABLE_FIELDS.includes(query.sortBy)
@@ -114,6 +188,22 @@ const getAllContacts = async (query) => {
       ? mongooseQuery.collation(CASE_INSENSITIVE_COLLATION)
       : mongooseQuery;
 
+  return { filter, sortField, sortOrder, applyCollationIfNeeded };
+}
+
+// ================= GET ALL CONTACTS =================
+// Supports: search, sorting, pagination, companyCategory filter,
+// reference filter (case-insensitive — see the reference-filter note
+// below). Response shape mirrors eventService.getAllEvents (the service
+// returns the full { success, message, data, pagination } payload, and
+// the controller just forwards it as-is).
+const getAllContacts = async (query) => {
+  const page = parseInt(query.page) || 1;
+  const limit = parseInt(query.limit) || 10;
+
+  const { filter, sortField, sortOrder, applyCollationIfNeeded } =
+    buildContactQuery(query);
+
   const total = await applyCollationIfNeeded(Contact.countDocuments(filter));
 
   const contacts = await applyCollationIfNeeded(
@@ -136,6 +226,102 @@ const getAllContacts = async (query) => {
       totalPages: Math.ceil(total / limit),
     },
   };
+};
+
+// ================= EXPORT CONTACTS =================
+// GET /api/contacts/export?search=&sortBy=&sortOrder=&companyCategory=
+// &reference= — same query params as getAllContacts (minus
+// page/limit: every matching contact is exported, not just one page),
+// built through the exact same buildContactQuery helper so the
+// exported file can never disagree with what the Contact List table is
+// currently showing for that search/filter/sort combination. Streams
+// an .xlsx file directly onto the response, same convention as
+// bookingService.exportBookings.
+const exportContacts = async (query, res) => {
+  const { filter, sortField, sortOrder, applyCollationIfNeeded } =
+    buildContactQuery(query);
+
+  const contacts = await applyCollationIfNeeded(
+    Contact.find(filter)
+      .populate("companyCategory", "name")
+      .populate("createdBy", "name")
+      .sort({ [sortField]: sortOrder })
+  ).lean();
+
+  // ================= WORKBOOK =================
+  const ExcelJS = require("exceljs");
+
+  const workbook = new ExcelJS.Workbook();
+
+  workbook.creator = "Event Management CRM";
+  workbook.created = new Date();
+
+  const worksheet = workbook.addWorksheet("Contact List");
+
+  worksheet.columns = [
+    { header: "Full Name", key: "fullName", width: 25 },
+    { header: "WhatsApp Number", key: "whatsappNumber", width: 20 },
+    { header: "Company Name", key: "companyName", width: 25 },
+    { header: "Company Category", key: "companyCategory", width: 22 },
+    { header: "Address", key: "address", width: 30 },
+    { header: "Reference", key: "references", width: 30 },
+    { header: "Created At", key: "createdAt", width: 22 },
+  ];
+
+  // ================= HEADER STYLE =================
+  // Same header styling as bookingService.exportBookings, so every
+  // exported report in the app looks consistent.
+  worksheet.getRow(1).font = {
+    bold: true,
+    color: { argb: "FFFFFFFF" },
+  };
+
+  worksheet.getRow(1).fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "1F4E78" },
+  };
+
+  worksheet.getRow(1).alignment = {
+    vertical: "middle",
+    horizontal: "center",
+  };
+
+  // ================= ROWS =================
+  contacts.forEach((contact) => {
+    const references = Array.isArray(contact.references)
+      ? contact.references.filter(
+          (reference) => typeof reference === "string" && reference.trim()
+        )
+      : [];
+
+    worksheet.addRow({
+      fullName: contact.fullName || "-",
+      whatsappNumber: contact.whatsappNumber || "-",
+      companyName: contact.companyName || "-",
+      companyCategory: contact.companyCategory?.name || "-",
+      address: contact.address || "-",
+      references: references.length ? references.join(", ") : "-",
+      createdAt: contact.createdAt
+        ? new Date(contact.createdAt).toLocaleString("en-GB")
+        : "-",
+    });
+  });
+
+  // ================= DOWNLOAD =================
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename=ContactList_${Date.now()}.xlsx`
+  );
+
+  await workbook.xlsx.write(res);
+
+  res.end();
 };
 
 // ================= GET CONTACT BY ID =================
@@ -230,6 +416,57 @@ const deleteContact = async (id, adminId) => {
   await contact.save();
 
   return contact;
+};
+
+// ================= GET UNIQUE REFERENCES =================
+// GET /api/contacts/unique-references — powers the Contact List's
+// "All References" filter dropdown (see contactService.getUniqueReferencesApi
+// on the frontend). Returns a flat, case-insensitively de-duplicated,
+// alphabetically sorted list of every reference value across active
+// (non-soft-deleted) contacts — e.g. Karan -> ["a","b"] and
+// Mahesh -> ["A","c"] becomes ["a","b","c"], keeping whichever casing
+// was encountered first. Optional `search` narrows the list to values
+// containing that text (case-insensitive), same as the frontend
+// service's documented optional param.
+const getUniqueReferences = async (query = {}) => {
+  const search = String(query.search || "").trim().toLowerCase();
+
+  const contacts = await Contact.find(
+    { isDeleted: { $ne: true } },
+    { references: 1 }
+  ).lean();
+
+  const seen = new Set();
+  const uniqueReferences = [];
+
+  for (const contact of contacts) {
+    const references = Array.isArray(contact.references)
+      ? contact.references
+      : [];
+
+    for (const raw of references) {
+      if (typeof raw !== "string") continue;
+
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+
+      if (search && !trimmed.toLowerCase().includes(search)) continue;
+
+      const key = Contact.normalizeReferenceKey(trimmed);
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      uniqueReferences.push(trimmed);
+    }
+  }
+
+  uniqueReferences.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  return {
+    success: true,
+    message: "Unique references fetched successfully",
+    data: uniqueReferences,
+  };
 };
 
 // ================= GET REFERENCE SUMMARY =================
@@ -336,8 +573,10 @@ async function assertCompanyCategoryExists(companyCategoryId) {
 module.exports = {
   createContact,
   getAllContacts,
+  exportContacts,
   getContactById,
   updateContact,
   deleteContact,
+  getUniqueReferences,
   getReferenceSummary,
 };

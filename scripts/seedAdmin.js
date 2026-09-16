@@ -4,10 +4,10 @@ const mongoose = require("mongoose");
 const connectDB = require("../config/db");
 const Admin = require("../models/admin.model");
 
-const ADMIN_NAME = process.env.SEED_ADMIN_NAME || "City LifeStyle ";
-const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || "citylifestyle@gmail.com";
-const ADMIN_MOBILE = process.env.SEED_ADMIN_MOBILE || "9876543210";
-const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || "citylifestyle123";
+const ADMIN_NAME = process.env.SEED_ADMIN_NAME || "SuperAdmin";
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || "lunagriyamukund1@gmail.com";
+const ADMIN_MOBILE = process.env.SEED_ADMIN_MOBILE || "9081312475";
+const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || "RDM789!@#";
 
 const run = async () => {
     await connectDB();
@@ -20,18 +20,15 @@ const run = async () => {
     });
 
     if (existing) {
-        // This account is the main CityLifestyle Super Admin identity by
-        // definition (matched on the seed email/mobile above). If it was
-        // created before `adminType` existed, or somehow isn't marked as
-        // "superadmin" yet, promote it now. Only `adminType` is touched —
-        // name/email/mobile/password/role/status are left exactly as-is.
-        if (existing.adminType !== "superadmin") {
-            existing.adminType = "superadmin";
-            await existing.save();
-            console.log("Existing Admin found and marked as superadmin.");
-        } else {
-            console.log("Admin already exists. Nothing to do.");
-        }
+        existing.name = ADMIN_NAME;
+        existing.email = ADMIN_EMAIL.toLowerCase();
+        existing.mobile = ADMIN_MOBILE;
+        existing.password = ADMIN_PASSWORD;
+        existing.adminType = "superadmin";
+
+        await existing.save();
+
+        console.log("Existing Admin updated successfully.");
     } else {
         await Admin.create({
             name: ADMIN_NAME,
@@ -42,10 +39,6 @@ const run = async () => {
         });
 
         console.log("Admin created successfully!");
-        console.log(`Name: ${ADMIN_NAME}`);
-        console.log(`Email: ${ADMIN_EMAIL}`);
-        console.log(`Mobile: ${ADMIN_MOBILE}`);
-        console.log("Admin Type: superadmin");
     }
 
     await mongoose.connection.close();

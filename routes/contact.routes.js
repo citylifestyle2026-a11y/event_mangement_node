@@ -31,6 +31,17 @@ router.get(
   contactController.getAllContacts
 );
 
+// Get Unique References — must be registered BEFORE the "/:id" route
+// below, otherwise Express would match "unique-references" as an :id
+// param and route it to getContactById instead (which then fails with
+// "Invalid Contact ID" since it isn't a Mongo ObjectId). Powers the
+// Contact List's "All References" filter dropdown.
+router.get(
+  "/unique-references",
+  protect,
+  contactController.getUniqueReferences
+);
+
 // Get Reference Summary — must be registered BEFORE the "/:id" route
 // below, otherwise Express would match "reference-summary" as an :id
 // param and route it to getContactById instead.
@@ -38,6 +49,17 @@ router.get(
   "/reference-summary",
   protect,
   contactController.getReferenceSummary
+);
+
+// Export Contacts — supports the same ?search=&sortBy=&sortOrder=
+// &companyCategory=&reference= query params as get-all-contacts (see
+// services/contact.service.js's exportContacts). Must be registered
+// BEFORE the "/:id" route below, otherwise Express would match
+// "export" as an :id param and route it to getContactById instead.
+router.get(
+  "/export",
+  protect,
+  contactController.exportContacts
 );
 
 // Get Contact By Id

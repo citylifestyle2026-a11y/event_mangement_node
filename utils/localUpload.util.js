@@ -117,6 +117,17 @@ const uploadToLocal = async (input, folder, resourceType = "image", extraOptions
 
   await fs.promises.writeFile(absolutePath, buffer);
 
+  // Verify the write actually landed on disk before handing back a
+  // public URL for it. Without this, a write that silently fails to
+  // persist (full disk, permissions, filesystem/mount issue) still
+  // returns a success URL that then 404s later — masking the real
+  // failure at generation time instead of surfacing it immediately.
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(
+      `uploadToLocal: file was not found on disk after write (${absolutePath}).`
+    );
+  }
+
   // Stored as the "public_id" equivalent (relative path under
   // uploads/), so utils/deleteLocalFile.js can resolve and remove the
   // exact same file later.
