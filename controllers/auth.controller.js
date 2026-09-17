@@ -44,7 +44,7 @@ const login = async (req, res) => {
             if (!isPasswordMatch) {
                 return res.status(401).json({
                     success:false,
-                    message:"Invalid email/mobile or password",
+                    message:"Password is incorrect",
                 });
             }
 
@@ -86,7 +86,7 @@ const login = async (req, res) => {
         if (!user) {
             return res.status(401).json({
                 success:false,
-                message:"Invalid email/mobile or password",
+                message:"Email or mobile number is incorrect",
             });
         }
 
@@ -105,7 +105,7 @@ const login = async (req, res) => {
         if (!isUserPasswordMatch) {
             return res.status(401).json({
                 success:false,
-                message:"Invalid email/mobile or password",
+                message:"Password is incorrect",
             });
         }
 
