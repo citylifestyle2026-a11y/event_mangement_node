@@ -4,6 +4,7 @@ const TicketType = require("../models/ticketType.model");
 const Booking = require("../models/booking.model");
 const BookingTicket = require("../models/bookingTicket.model");
 const uploadImage = require("../utils/localUpload.util");
+const deleteImage = require("../utils/deleteLocalFile");
 const generateEventCode = require("../utils/generateEventCode");
 
 // ================= EVENT EXPIRY STATUS SYNC (NO CRON) =================
@@ -277,6 +278,41 @@ exports.deleteEvent = async (id, adminId) => {
     throw new Error("Event not found");
   }
 
+  // ================= COLLECT ALL EVENT-RELATED FILE PATHS (BEFORE DELETE) =================
+  // Gathered up-front — before the Booking/BookingTicket records are
+  // touched — using ONLY the exact stored public_id fields (never
+  // derived/guessed filenames), so this remains correct regardless of
+  // what deleteImage/deleteLocalFile does with them later:
+  //   - event.imagePublicId          -> the Event's own uploaded image
+  //   - ticket.qrImagePublicId       -> that ticket's generated QR code
+  //   - ticket.ticketPdfPublicId     -> that ticket's generated PDF
+  //   - ticket.attendee.profileImagePublicId -> that attendee's uploaded
+  //     registration photo, if registration already happened
+  // Every one of these is scoped to eventId (BookingTicket.eventId), so
+  // only files belonging to THIS event are ever collected — no other
+  // event's files are read or referenced here.
+  const filesToDelete = [];
+
+  if (event.imagePublicId) {
+    filesToDelete.push(event.imagePublicId);
+  }
+
+  const relatedTickets = await BookingTicket.find({ eventId: id }).select(
+    "qrImagePublicId ticketPdfPublicId attendee.profileImagePublicId"
+  );
+
+  relatedTickets.forEach((ticket) => {
+    if (ticket.qrImagePublicId) {
+      filesToDelete.push(ticket.qrImagePublicId);
+    }
+    if (ticket.ticketPdfPublicId) {
+      filesToDelete.push(ticket.ticketPdfPublicId);
+    }
+    if (ticket.attendee && ticket.attendee.profileImagePublicId) {
+      filesToDelete.push(ticket.attendee.profileImagePublicId);
+    }
+  });
+
   const session = await mongoose.startSession();
 
   try {
@@ -295,6 +331,16 @@ exports.deleteEvent = async (id, adminId) => {
   } finally {
     await session.endSession();
   }
+
+  // ================= DELETE COLLECTED FILES (ONLY AFTER COMMIT) =================
+  // Only reached once the transaction above has committed successfully —
+  // if it throws/aborts, execution never reaches here and no file is
+  // touched. Reuses the existing deleteImage/deleteLocalFile util as-is
+  // for every file, so its existing UPLOAD_ROOT path-safety check and
+  // "missing file is not an error" (ENOENT) handling apply unchanged
+  // here too — a missing file can never fail Event deletion, and a
+  // malformed/legacy path can never delete outside uploads/.
+  await Promise.all(filesToDelete.map((publicId) => deleteImage(publicId)));
 
   return {
     success: true,
@@ -329,4 +375,3 @@ exports.changeEventStatus = async (id) => {
     data: updatedEvent,
   };
 };
-
